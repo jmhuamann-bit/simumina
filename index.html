@@ -641,7 +641,7 @@ details.data-table summary:hover { color: var(--text-2); }
 
   <!-- Capa del simulador (pantalla completa) -->
   <div id="sim-root" class="sim-root" hidden>
-    <canvas id="sim-canvas" class="sim-canvas"></canvas>
+    <canvas id="sim-canvas" class="sim-canvas" tabindex="-1"></canvas>
     <div id="hud" class="hud"></div>
     <aside id="instructor" class="instructor"></aside>
   </div>
@@ -3406,7 +3406,7 @@ var InputManager = class {
   poll(dt, xrSession = null) {
     const k = this.keys;
     const st = this.state;
-    const ui = { camera: false, help: false, instructor: false, pause: false, trigger: false, recenter: false, start: false };
+    const ui = { camera: false, help: false, instructor: false, pause: false, trigger: false, recenter: false, start: false, drive: false, parkingAuto: false };
     const left = k.has("KeyA") || k.has("ArrowLeft");
     const right = k.has("KeyD") || k.has("ArrowRight");
     const steerT = left && !right ? 1 : right && !left ? -1 : 0;
@@ -3422,6 +3422,13 @@ var InputManager = class {
     let radio = k.has("KeyR"), horn = k.has("KeyH");
     if (this.pressed("KeyB")) st.ebrake = !st.ebrake;
     if (this.pressed("KeyP")) st.parking = !st.parking;
+    if (this.pressed("KeyW") || this.pressed("ArrowUp")) {
+      ui.drive = true;
+      if (st.parking) {
+        st.parking = false;
+        ui.parkingAuto = true;
+      }
+    }
     if (this.pressed("KeyX")) st.hazard = !st.hazard;
     if (this.pressed("KeyL")) st.lights = !st.lights;
     if (this.pressed("Digit1") || this.pressed("Numpad1")) st.gear = "D";
@@ -5176,12 +5183,13 @@ var Tutor = class {
   briefing(mode, ctx) {
     const op = ctx.operatorCode ? `operador ${spellCode(ctx.operatorCode)}` : "operador";
     const vr = ctx.vr ? " Mira alrededor de la cabina: a tu derecha está la pantalla del equipo." : "";
+    const go = !ctx.keyboard ? "Suelta el freno de parqueo cuando estés listo." : ctx.parking ? "Acelera con la tecla W cuando estés listo: eso suelta el freno de parqueo." : "Freno de parqueo liberado: acelera con W.";
     if (mode === "familiarizacion") {
-      this.say(`Hola, ${op}. Soy tu tutor de SimuMina. En esta sesión de familiarización bajaremos la ${ctx.rampName} con el camión cargado para que conozcas los mandos.${vr} Primero, suelta el freno de parqueo (tecla P).`, { id: "brief" });
+      this.say(`Hola, ${op}. Soy tu tutor de SimuMina. En esta sesión de familiarización bajaremos la ${ctx.rampName} con el camión cargado para que conozcas los mandos.${vr} ${ctx.keyboard ? go : "Primero, suelta el freno de parqueo."}`, { id: "brief" });
     } else if (mode === "entrenamiento") {
-      this.say(`Sesión de entrenamiento guiado, ${op}. Bajarás cargado por la ${ctx.rampName}. Recuerda el procedimiento ante una falla de frenos: retardador a fondo, freno de emergencia, dirigir el camión a la berma del talud o a la rampa de escape, y avisar por radio. Te acompañaré durante la emergencia. Suelta el freno de parqueo cuando estés listo.`, { id: "brief" });
+      this.say(`Sesión de entrenamiento guiado, ${op}. Bajarás cargado por la ${ctx.rampName}. Recuerda el procedimiento ante una falla de frenos: retardador a fondo, freno de emergencia, dirigir el camión a la berma del talud o a la rampa de escape, y avisar por radio. Te acompañaré durante la emergencia. ${go}`, { id: "brief" });
     } else {
-      this.say(`Sesión de evaluación, ${op}. Conduce como en un turno normal: límite de ${ctx.speedLimit} kilómetros por hora en rampa y mantén tu carril. Durante la evaluación no te daré indicaciones. Suelta el freno de parqueo cuando estés listo.`, { id: "brief" });
+      this.say(`Sesión de evaluación, ${op}. Conduce como en un turno normal: límite de ${ctx.speedLimit} kilómetros por hora en rampa y mantén tu carril. Durante la evaluación no te daré indicaciones. ${go}`, { id: "brief" });
     }
   }
   // Se llama varias veces por segundo con el estado de la simulación
@@ -6160,7 +6168,9 @@ var Simulator = class {
       operatorCode: this.cfg.operator?.code,
       rampName: this.profile.rampName || "Rampa 2",
       speedLimit: this.profile.speedLimit ?? 20,
-      vr: this.xr.presenting
+      vr: this.xr.presenting,
+      keyboard: !this.xr.presenting && this.input.source === "teclado",
+      parking: this.input.state.parking
     });
     this.hud.started();
   }
@@ -6413,7 +6423,8 @@ var Simulator = class {
     if (ui.pause && this.scenario.phase !== "listo") this.setPaused(!this.paused);
     if (ui.trigger) this.triggerFailure();
     if (ui.recenter) this.recenter();
-    if (ui.start && this.scenario.phase === "listo") this.begin();
+    if ((ui.start || ui.drive && !this.xr.presenting) && this.scenario.phase === "listo") this.begin();
+    if (ui.parkingAuto && !this.finished) this.hud.toast("Freno de parqueo liberado al acelerar. La tecla P lo aplica o lo suelta.");
     if (this.paused) dt = 0;
     const sc = this.scenario;
     const driving = sc.phase === "conduccion" || sc.phase === "emergencia";
@@ -6715,7 +6726,7 @@ var Hud = class {
       <div class="center-msg" data-k="ready">
         <h2>${esc2(info.modeLabel)} · Falla de frenos en rampa</h2>
         <p>${esc2(info.truckName || "")}<br>${esc2(info.conditions)} · ${esc2(info.profile.rampName || "Rampa 2")} (${n12(info.profile.rampGrade ?? 9.5)}%)</p>
-        <p class="small mt12">Con visor: el operador se coloca el visor y el instructor pulsa <b>Comenzar</b>. Demostración: use el teclado (<kbd>F1</kbd> muestra las teclas).</p>
+        <p class="small mt12">Con visor: el operador se coloca el visor y el instructor pulsa <b>Comenzar</b>. Con teclado: pulse <b>Comenzar</b> o acelere con <kbd>W</kbd>; <kbd>A</kbd> <kbd>D</kbd> giran y <kbd>F1</kbd> muestra todas las teclas.</p>
         <div class="row">
           <button class="btn primary lg" data-a="begin">${icon("play")}Comenzar <kbd>Enter</kbd></button>
           <button class="btn lg" data-a="vr2" hidden>${icon("vr")}Entrar en RV</button>
@@ -9334,11 +9345,14 @@ var app = {
   },
   // --- Simulador -----------------------------------------------------------------------------
   async startSession(cfg) {
+    if (this.starting) return;
+    this.starting = true;
     const loading = document.getElementById("loading");
     const bar = document.getElementById("loading-bar");
     const step = document.getElementById("loading-step");
     loading.hidden = false;
     bar.style.width = "0%";
+    document.getElementById("app").inert = true;
     try {
       if (!this.sim) {
         this.hud = new Hud(document.getElementById("hud"), document.getElementById("instructor"), { action: (a) => this.onHudAction(a), toast });
@@ -9365,13 +9379,15 @@ var app = {
       this.hud.setVRSupported(this.status.xr.state === "listo");
       this.sim.startSession(cfg);
       this.sim.resize();
-      document.getElementById("sim-canvas").focus();
+      document.getElementById("sim-canvas").focus({ preventScroll: true });
     } catch (e) {
       console.error(e);
       toast(`No se pudo iniciar el simulador: ${e.message}`, "danger");
       document.getElementById("sim-root").hidden = true;
+      document.getElementById("app").inert = false;
     } finally {
       loading.hidden = true;
+      this.starting = false;
     }
   },
   async onHudAction(a) {
@@ -9427,6 +9443,7 @@ var app = {
   },
   async onSessionFinished(rec) {
     document.getElementById("sim-root").hidden = true;
+    document.getElementById("app").inert = false;
     try {
       await store.saveSession(rec);
       if (rec.operator?.code && !await store.operator(rec.operator.code)) await store.saveOperator({ ...rec.operator, createdAt: (/* @__PURE__ */ new Date()).toISOString(), ...rec.demo ? { demo: true } : {} });
@@ -9439,6 +9456,7 @@ var app = {
   },
   onSimExit() {
     document.getElementById("sim-root").hidden = true;
+    document.getElementById("app").inert = false;
     this.refreshStatus();
   }
 };
