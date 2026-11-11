@@ -56,9 +56,15 @@ Demo del simulador SimuMina para operadores mineros: 27 simulaciones de emergenc
 - Se maneja con el teclado: en la portada, **Probar con teclado** en cualquier simulación. `W` acelera, `S` frena, `A` `D` giran, `Espacio` retardador, `B` freno de emergencia, `X` luces de emergencia, `P` freno de parqueo, `H` bocina, `R` (mantener) radio, `1` `2` `3` marcha D · N · R. `F1` muestra todas las teclas de cada simulación.
 - Cargador frontal: `U` sube y `J` baja el balde (mantener).
 - Perforadora: `K` inicia o detiene la perforación; `U` sube y `J` baja el mástil (mantener).
+- En el entrenamiento guiado, el panel del procedimiento muestra al lado de cada paso la tecla que lo cumple. En la evaluación no aparece, porque es una sesión sin ayudas.
 - Los registros y reportes que trae son de demostración (operadores ficticios). Lo que haga cada visitante queda solo en su navegador.
 - En la estación de la mina, la misma plataforma conecta el visor de realidad virtual, el volante con pedales y el traje háptico.
 - El tutor de IA en la nube (informe y chat con Claude) funciona cuando la página se abre dentro de Claude. En otras vistas trabaja el tutor local, sin conexión.
+- `C` recorre las cámaras: cabina, exterior, retroceso, cine (cortes automáticos entre planos), dron y planta. En la cabina, el ratón permite mirar los espejos retrovisores.
+
+## Gráficos
+
+Un motor visual común aplica a las 27 simulaciones: posproceso HDR con gradación de color por simulación, luz ambiente que rebota del suelo, luz dinámica del fuego y de los rayos, polvo y partículas en el aire, huellas de neumáticos y orugas, suspensión con resortes, frenos que se ponen al rojo y humean, espejos retrovisores funcionales y escenografía propia del cargador (frente de carguío) y de la perforadora (malla de perforación y cresta del banco). El terreno, la cordillera y las rocas se dibujan por sectores y los camiones lejanos usan una versión simplificada. La calidad (Baja, Media, Alta) se elige en la configuración; dentro del visor de RV el detalle se ajusta solo.
 
 Los procedimientos, tiempos y parámetros de las simulaciones son referenciales y deben validarse con los estándares de cada mina. three.js (licencia MIT) se carga desde jsDelivr.
 

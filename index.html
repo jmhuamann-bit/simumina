@@ -474,6 +474,10 @@ kbd {
 .proc-item.done { color: var(--text); }
 .proc-item.done b { background: var(--ok); color: #04140c; }
 .proc-item .t { margin-left: auto; font-family: var(--font-display); color: var(--text-3); font-size: 12px; }
+.proc-item .pk { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; flex: none; font-size: 10.5px; color: var(--text-3); }
+.proc-item .pk kbd { min-width: 20px; padding: 0 5px; font-size: 11px; line-height: 17px; }
+.proc-item .pk + .t { margin-left: 6px; }
+.proc-item.done .pk { display: none; }
 
 .hud .keys {
   position: absolute; left: 14px; top: 64px; background: rgba(10, 14, 19, 0.8); border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1891,11 +1895,14 @@ function addBakedLight(material, aoAmount = 1) {
 // Quita el reflejo del cielo (IBL) de los materiales de suelo: es lo más caro por píxel en gráficas integradas.
 // Se reemplaza por una luz ambiente constante.
 var AMBIENT_SKY = { value: new THREE2.Color(0.2, 0.22, 0.26) };
+// Rebote cálido del suelo: las caras que miran hacia abajo reciben luz del terreno, no del cielo
+var AMBIENT_GROUND = { value: new THREE2.Color(0.12, 0.1, 0.08) };
 function addCheapAmbient(material) {
   return addPatch(material, "cheapamb", (shader) => {
     shader.uniforms.uAmbSky = AMBIENT_SKY;
-    shader.fragmentShader = shader.fragmentShader.replace("#include <common>", "#include <common>\n#undef USE_ENVMAP\nuniform vec3 uAmbSky;").replace("#include <lights_fragment_end>", `#include <lights_fragment_end>
-      reflectedLight.indirectDiffuse += material.diffuseColor * uAmbSky;`);
+    shader.uniforms.uAmbGnd = AMBIENT_GROUND;
+    shader.fragmentShader = shader.fragmentShader.replace("#include <common>", "#include <common>\n#undef USE_ENVMAP\nuniform vec3 uAmbSky;\nuniform vec3 uAmbGnd;").replace("#include <lights_fragment_end>", `#include <lights_fragment_end>
+      reflectedLight.indirectDiffuse += material.diffuseColor * mix(uAmbGnd, uAmbSky, inverseTransformDirection(normal, viewMatrix).y * 0.5 + 0.5);`);
   });
 }
 // Sombra de 4 muestras con rotación por píxel: tan suave como 9 muestras y menos de la mitad de costo
@@ -2839,7 +2846,7 @@ function wheelGeometry() {
   const W = tireW / 2;
   const prof = [[0.98, -W * 0.8], [1.08, -W * 0.96], [R * 0.8, -W], [R * 0.93, -W * 0.96], [R * 0.985, -W * 0.8], [R, -W * 0.58], [R, W * 0.58], [R * 0.985, W * 0.8], [R * 0.93, W * 0.96], [R * 0.8, W], [1.08, W * 0.96], [0.98, W * 0.8]].map(([r, y]) => new THREE3.Vector2(r, y));
   const P2 = new Parts();
-  const tire = new THREE3.LatheGeometry(prof, 48);
+  const tire = new THREE3.LatheGeometry(prof, 36);
   tire.rotateZ(-Math.PI / 2);
   P2._push("rubber", tire);
   const N = 40;
@@ -2863,7 +2870,7 @@ function wheelGeometry() {
   }
   // Aro
   const rimProf = [[0.3, -W + 0.08], [0.98, -W + 0.1], [1.04, -W + 0.02], [1.06, -W + 0.12], [0.98, -W + 0.22], [0.95, W - 0.22], [1.06, W - 0.12], [1.04, W - 0.02], [0.98, W - 0.1], [0.88, W - 0.1], [0.82, W - 0.22], [0.42, W - 0.22], [0.36, W - 0.06], [0, W - 0.06]].map(([r, y]) => new THREE3.Vector2(r, y));
-  const rim = new THREE3.LatheGeometry(rimProf, 32);
+  const rim = new THREE3.LatheGeometry(rimProf, 24);
   rim.rotateZ(-Math.PI / 2);
   P2._push("rim", rim);
   const hub = new THREE3.CylinderGeometry(0.42, 0.5, 0.34, 18);
@@ -3276,8 +3283,40 @@ function buildTruck({ unit = 214, interior = false, loadFactor = 1, lights = fal
       frontR.rotation.y = steerAngle;
     }
   };
+  // Versión simplificada para cuando el camión está lejos
+  const proxy = new THREE3.Group();
+  for (const [key, geo] of truckProxyGeometry()) {
+    const pm = new THREE3.Mesh(geo, mats2[key]);
+    pm.castShadow = true;
+    proxy.add(pm);
+  }
+  proxy.visible = false;
+  root.add(proxy);
+  truck.setDetail = (full) => {
+    if (truck.detail === full) return;
+    truck.detail = full;
+    body.visible = full;
+    for (const w of [frontL, frontR, rearL, rearR]) w.visible = full;
+    proxy.visible = !full;
+  };
+  truck.trackWheels = [[3.15, 3.3], [-3.15, 3.3], [3.76, -3.3], [2.24, -3.3], [-3.76, -3.3], [-2.24, -3.3]].map(([x, z]) => ({ x, z, w: 1.2 }));
+  truck.mirrors = [1, -1].map((s) => ({ pos: [s * 5.191, 6, 7.8165], ry: Math.PI + s * 0.35, w: 0.5, h: 0.8, fov: 30 }));
   if (interior) truck.interior = buildCabInterior(truck);
   return truck;
+}
+var truckProxyCache = null;
+function truckProxyGeometry() {
+  if (truckProxyCache) return truckProxyCache;
+  const P2 = new Parts();
+  P2.box("paint", 9, 2.85, 11.6, 0, 5.45, -1.4);
+  P2.box("paint", 9.4, 0.4, 3.9, 0, 7.25, 6.3);
+  P2.box("paint", 9.2, 0.5, 3.5, 0, 4.3, 6);
+  P2.box("paint", 3, 2.8, 3.9, 0, 2.9, 5);
+  P2.box("paint", 2.9, 2.3, 2.85, 3, 5.6, 5.95);
+  P2.box("steel", 2.4, 1.2, 12, 0, 2.2, 0);
+  for (const [x, z] of [[3.15, 3.3], [-3.15, 3.3], [3.76, -3.3], [2.24, -3.3], [-3.76, -3.3], [-2.24, -3.3]]) P2.add("rubber", new THREE3.CylinderGeometry(1.85, 1.85, 1.35, 14), x, 1.85, z, 0, 0, Math.PI / 2);
+  truckProxyCache = P2.mergeAll();
+  return truckProxyCache;
 }
 // Luz interior de la cabina: un relleno barato, sin luces puntuales que encarezcan toda la escena
 var CAB_LIGHT = { value: 1 };
@@ -3430,6 +3469,23 @@ function dashTexture(kind) {
       ctx.fill();
     }
     return toTexture(c, { repeat: false, aniso: 8 });
+  });
+}
+function dashReflTexture() {
+  return cached("dashRefl", () => {
+    const c = makeCanvas(256, 64);
+    const ctx = c.getContext("2d");
+    const gr = ctx.createLinearGradient(0, 0, 0, 64);
+    gr.addColorStop(0, "rgba(210,220,230,0)");
+    gr.addColorStop(0.55, "rgba(210,220,230,0.35)");
+    gr.addColorStop(1, "rgba(220,228,236,1)");
+    ctx.fillStyle = gr;
+    ctx.fillRect(0, 0, 256, 64);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.fillStyle = "rgba(0,0,0,0.8)";
+    ctx.fillRect(100, 34, 56, 30);
+    ctx.fillRect(176, 40, 44, 24);
+    return toTexture(c, { repeat: false });
   });
 }
 function rainGlassMaterial() {
@@ -3617,6 +3673,11 @@ function buildCabInterior(truck) {
   dirt.position.set(3, 5.93, 7.28);
   dirt.rotation.y = Math.PI;
   g.add(dirt);
+  // Reflejo tenue del tablero en la parte baja del parabrisas
+  const refl = new THREE3.Mesh(new THREE3.PlaneGeometry(2.6, 0.62), new THREE3.MeshBasicMaterial({ map: dashReflTexture(), transparent: true, opacity: 0.08, blending: THREE3.AdditiveBlending, depthWrite: false, toneMapped: false }));
+  refl.position.set(3, 5.62, 7.275);
+  refl.rotation.y = Math.PI;
+  g.add(refl);
   const eye = TRUCK_DIMS.eye;
   // Volante
   const wheelCenter = new THREE3.Vector3(fx, 5.17, 6.5);
@@ -3853,6 +3914,22 @@ function addSpots(root, pts) {
   }
   return spots;
 }
+// Palanca de mando (balde o mástil) sobre la consola derecha
+function addJoystick(group, mats2, x, z, color = "knobYellow") {
+  const base = new THREE3.Mesh(new THREE3.CylinderGeometry(0.06, 0.07, 0.04, 14), mats2.dash);
+  base.position.set(x, 5.285, z);
+  const pivot = new THREE3.Group();
+  pivot.position.set(x, 5.3, z);
+  const boot = new THREE3.Mesh(new THREE3.CylinderGeometry(0.025, 0.045, 0.07, 10), mats2.black);
+  boot.position.y = 0.035;
+  const stick = new THREE3.Mesh(new THREE3.CylinderGeometry(0.012, 0.014, 0.16, 8), mats2.chrome);
+  stick.position.y = 0.1;
+  const grip = new THREE3.Mesh(new THREE3.CapsuleGeometry(0.026, 0.07, 4, 10), mats2[color]);
+  grip.position.y = 0.21;
+  pivot.add(boot, stick, grip);
+  group.add(base, pivot);
+  return pivot;
+}
 function glassOf(group) {
   return group.children.find((c) => c.name === "glass") || null;
 }
@@ -3904,6 +3981,11 @@ function buildLoader({ interior = false, lights = false } = {}) {
   // Escalera de acceso (lado de la puerta)
   for (let k = 0; k < 6; k++) P2.bevel("steel", 0.72, 0.05, 0.3, 2.15, 0.55 + k * 0.45, -0.35, 0, 0, 0, 0.012);
   for (const dx of [-0.38, 0.38]) P2.tube("paint2", V(2.15 + dx, 0.4, -0.35), V(2.15 + dx, 4.1, -0.35), 0.035, 6);
+  // Espejos exteriores en las esquinas delanteras de la cabina
+  for (const s of [1, -1]) {
+    P2.bevel("black", 0.5, 0.68, 0.08, s * 1.82, 4.95, 1, 0, s * 0.25, 0, 0.02);
+    P2.tube("steel", V(s * 1.42, 5, 0.8), V(s * 1.78, 4.98, 0.98), 0.025, 5);
+  }
   const rear = P2.build(mats2);
   body.add(rear);
   for (const s of [1, -1]) {
@@ -4040,6 +4122,7 @@ function buildLoader({ interior = false, lights = false } = {}) {
     },
     // Teclas U / J mueven el balde. Con el balde apoyado, el roce contra el piso frena el equipo.
     operate(dt, ctl, sim) {
+      if (m.joy) m.joy.rotation.x = -(ctl.impl || 0) * 0.35;
       if (ctl.impl) setLift(state.lift + ctl.impl * (ctl.impl > 0 ? 0.26 : 0.36) * dt);
       const d = sim.dyn;
       const onGround = state.lift < 0.035;
@@ -4067,9 +4150,13 @@ function buildLoader({ interior = false, lights = false } = {}) {
     }
   };
   machineApi(m, { mats2, glassMesh: glassOf(rear), spots });
+  m.trackWheels = [[1.85, -2.3], [-1.85, -2.3]].map(([x, z]) => ({ x, z, w: 1 }));
+  m.mirrors = [1, -1].map((s) => ({ pos: [s * 1.809, 4.95, 0.956], ry: Math.PI + s * 0.25, w: 0.42, h: 0.58, fov: 34 }));
+  m.suspK = 0.55;
   if (interior) {
     m.interior = buildCabInterior(m);
     m.interior.group.position.copy(eyeOff);
+    m.joy = addJoystick(m.interior.group, mats2, 2.18, 5.6);
   }
   return m;
 }
@@ -4243,6 +4330,8 @@ function buildDrill({ interior = false, lights = false } = {}) {
     operate(dt, ctl, sim) {
       const d = sim.dyn;
       const now = performance.now() / 1e3;
+      if (m.joy) m.joy.rotation.x = -(ctl.impl || 0) * 0.35;
+      if (m.joy2) m.joy2.rotation.x = state.drilling ? 0.3 : 0;
       const warn = (text) => {
         if (now - warnT > 3) {
           warnT = now;
@@ -4289,9 +4378,13 @@ function buildDrill({ interior = false, lights = false } = {}) {
     }
   };
   machineApi(m, { mats2, glassMesh: glassOf(deck), spots });
+  m.trackWheels = [[2.25, 0], [-2.25, 0]].map(([x, z]) => ({ x, z, w: 1.15 }));
+  m.suspK = 0.25;
   if (interior) {
     m.interior = buildCabInterior(m);
     m.interior.group.position.copy(eyeOff);
+    m.joy = addJoystick(m.interior.group, mats2, 2.05, 5.55);
+    m.joy2 = addJoystick(m.interior.group, mats2, 2.34, 5.55, "knobRed");
   }
   return m;
 }
@@ -7012,7 +7105,23 @@ function chiseledRock(detail, cuts, seed) {
   return geo;
 }
 // Coloca las rocas apoyadas en el suelo, con variedad de tono por instancia
-function rockInstances(geo, list, { cast = true } = {}) {
+// Divide las rocas por celdas del mapa: cada celda se descarta sola cuando queda fuera de la cámara
+function rockInstances(geo, list, { cast = true, cell = 180 } = {}) {
+  if (list.length > 60) {
+    const cells = /* @__PURE__ */ new Map();
+    for (const r of list) {
+      const k = `${Math.floor(r.x / cell)},${Math.floor(r.z / cell)}`;
+      if (!cells.has(k)) cells.set(k, []);
+      cells.get(k).push(r);
+    }
+    const g = new THREE6.Group();
+    g.name = "rocas";
+    for (const part of cells.values()) g.add(rockChunk(geo, part, cast));
+    return g;
+  }
+  return rockChunk(geo, list, cast);
+}
+function rockChunk(geo, list, cast) {
   const m = mats();
   const mesh = new THREE6.InstancedMesh(geo, m.rock, list.length);
   const d = new THREE6.Object3D();
@@ -7029,7 +7138,40 @@ function rockInstances(geo, list, { cast = true } = {}) {
   mesh.castShadow = cast;
   mesh.receiveShadow = true;
   mesh.name = "rocas";
+  mesh.computeBoundingSphere();
   return mesh;
+}
+// Parte una malla grande en mosaicos que comparten los mismos vértices: la cámara solo dibuja los que ve
+function splitMeshTiles(mesh, tile) {
+  const geo = mesh.geometry, pos = geo.attributes.position, idx = geo.index.array;
+  const groups = /* @__PURE__ */ new Map();
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t], b = idx[t + 1], c = idx[t + 2];
+    const cx = (pos.getX(a) + pos.getX(b) + pos.getX(c)) / 3, cz = (pos.getZ(a) + pos.getZ(b) + pos.getZ(c)) / 3;
+    const k = `${Math.floor(cx / tile)},${Math.floor(cz / tile)}`;
+    let list = groups.get(k);
+    if (!list) groups.set(k, list = []);
+    list.push(a, b, c);
+  }
+  const out = new THREE6.Group();
+  out.name = `${mesh.name}-mosaico`;
+  const box = new THREE6.Box3(), v = new THREE6.Vector3();
+  for (const list of groups.values()) {
+    const g = new THREE6.BufferGeometry();
+    for (const [name, attr] of Object.entries(geo.attributes)) g.setAttribute(name, attr);
+    const arr = idx instanceof Uint32Array || pos.count > 65535 ? new Uint32Array(list) : new Uint16Array(list);
+    g.setIndex(new THREE6.BufferAttribute(arr, 1));
+    box.makeEmpty();
+    for (const i of list) box.expandByPoint(v.fromBufferAttribute(pos, i));
+    g.boundingBox = box.clone();
+    g.boundingSphere = box.getBoundingSphere(new THREE6.Sphere());
+    const m = new THREE6.Mesh(g, mesh.material);
+    m.castShadow = mesh.castShadow;
+    m.receiveShadow = mesh.receiveShadow;
+    m.name = mesh.name;
+    out.add(m);
+  }
+  return out;
 }
 function buildRocks(terrain, course, count, seed) {
   const rand = mulberry32(seed);
@@ -7285,6 +7427,12 @@ function buildProps(course, terrain, roadInfo, profile, seed = 7) {
   }
   addSign("info", "CHANCADORA", "PRIMARIA", course.padEnd - 40, signLat, 3);
   addSign("stop", "", "", end - 30, signLat, 1.8);
+  // Señalética industrial de la plataforma y del acceso a la rampa
+  const padLat = W + 3.4;
+  addSign("stop", "", "", 104, -padLat * (leftSide ? 1 : -1), 1.7);
+  addSign("info", "EPP OBLIGATORIO", "CASCO · CHALECO · LENTES", 22, padLat * (leftSide ? 1 : -1), 2.8);
+  addSign("info", "PUNTO CIEGO", "MANTENGA 50 m DEL CAEX", 70, -padLat * (leftSide ? 1 : -1), 2.8);
+  addSign("info", "VÍA EXCLUSIVA CAEX", "VEHÍCULOS LIVIANOS CEDEN EL PASO", r0 + 18, -signLat, 3);
   let k = 1;
   for (let s = r0; s < course.rampEnd; s += 100) addSign("marker", String(k++), "", s, -signLat, 1);
   group.add(buildRocks(terrain, course, 900, seed + 1));
@@ -7353,7 +7501,11 @@ async function buildWorld({ scene, profile, quality = "media", onProgress = () =
   onProgress(0.02, "Leyendo perfil de la mina…");
   const course = buildCourse(profile);
   const terrain = await buildTerrain(course, { spacing: quality === "baja" ? 4.6 : quality === "alta" ? 3.2 : 3.6, onProgress });
+  // El terreno y la cordillera se dibujan por mosaicos: lo que queda fuera de la cámara no se procesa
   scene.add(terrain.mesh, terrain.far);
+  terrain.mesh.visible = false;
+  terrain.far.visible = false;
+  scene.add(splitMeshTiles(terrain.mesh, 170), splitMeshTiles(terrain.far, 3200));
   onProgress(0.93, "Construyendo bermas y zonas de escape…");
   await new Promise((r) => setTimeout(r, 0));
   const roads = buildRoadMeshes(course, { bermHeight: profile.bermHeight ?? 2.8 });
@@ -7611,6 +7763,7 @@ var Environment = class {
     u.uCloudDark.value.set(p.night ? p.cloudDark : w.cloudDark || p.cloudDark);
     // Luz ambiente: cielo más el rebote cálido del suelo, para que las sombras no queden negras
     this.ambientSky = new THREE8.Color(p.hemiSky).lerp(new THREE8.Color(p.horizon), 0.35).multiplyScalar(p.envI * (w.fogAbs ? 0.75 : 1) * 1.05).add(new THREE8.Color(p.hemiGround).multiplyScalar(p.envI * (w.fogAbs ? 0.3 : 0.5)));
+    this.ambientGround = new THREE8.Color(p.hemiGround).multiplyScalar(p.envI * (w.fogAbs ? 0.45 : 0.7));
     this.haze = { color: new THREE8.Color(p.haze), amount: p.hazeAmt * (w.hazeAmt ?? 1) };
     if (w.fogTint && !p.night) this.haze.color.lerp(new THREE8.Color(w.fogTint), 0.7);
     this.sun.color.set(p.sun);
@@ -8157,6 +8310,11 @@ function noiseBuffer(ctx, seconds, brown = false) {
   }
   return buf;
 }
+var AUDIO_PROFILES = {
+  caex: { idle: 750, range: 1150, whine: 1, hyd: 0.6, drillRpm: 0 },
+  cargador: { idle: 820, range: 1350, whine: 0.25, hyd: 1, drillRpm: 0 },
+  perforadora: { idle: 1050, range: 500, whine: 0.15, hyd: 0.9, drillRpm: 350 }
+};
 var AudioEngine = class {
   constructor() {
     this.ctx = null;
@@ -8349,6 +8507,18 @@ var AudioEngine = class {
     rad.connect(radF);
     radF.connect(this.radioGain);
     this.radioGain.connect(this.master);
+    this.hydOsc = osc("sawtooth", 140);
+    const hydF = filt("bandpass", 700, 4);
+    this.hydGain = gain(0);
+    this.hydOsc.connect(hydF);
+    hydF.connect(this.hydGain);
+    this.hydGain.connect(this.cab);
+    const drillSrc = src(this.white);
+    const drillF = filt("bandpass", 1500, 0.9);
+    this.drillGain = gain(0);
+    drillSrc.connect(drillF);
+    drillF.connect(this.drillGain);
+    this.drillGain.connect(this.cab);
     this.rpm = 750;
     this.ready = true;
   }
@@ -8374,7 +8544,9 @@ var AudioEngine = class {
     const retP = Math.max(0, s.retarderPower || 0) / 33e5;
     const tracP = Math.max(0, s.tractionPower || 0) / 27e5;
     const off = !!s.engineOff;
-    const targetRpm = off ? 60 : s.crashed ? 650 : 750 + 1150 * s.throttle + 550 * Math.min(1, retP * 1.4);
+    // Cada máquina suena distinto: régimen del motor, zumbido eléctrico, hidráulica y perforación
+    const AP = AUDIO_PROFILES[s.machine] || AUDIO_PROFILES.caex;
+    const targetRpm = off ? 60 : s.crashed ? 650 : AP.idle + AP.range * s.throttle + 550 * Math.min(1, retP * 1.4) + (s.drilling ? AP.drillRpm : 0);
     this.rpm += (targetRpm - this.rpm) * Math.min(1, dt * 1.6);
     const f0 = this.rpm / 60 * 4;
     this.freq(this.eOsc[0], f0 / 2);
@@ -8390,7 +8562,12 @@ var AudioEngine = class {
     const wf = 120 + v * 30;
     this.freq(this.whine, wf);
     this.freq(this.whine2, wf * 2.01);
-    this.set(this.whineGain, Math.min(0.05, 0.012 + 0.035 * Math.max(tracP, retP)) * Math.min(1, v / 2));
+    this.set(this.whineGain, Math.min(0.05, 0.012 + 0.035 * Math.max(tracP, retP)) * Math.min(1, v / 2) * AP.whine);
+    if (this.hydGain) {
+      this.set(this.hydGain, off ? 0 : s.hydraulic ? 0.05 * AP.hyd : 0, 0.06);
+      this.freq(this.hydOsc, s.hydraulic ? 210 : 140, 0.2);
+      this.set(this.drillGain, off ? 0 : s.drilling ? 0.045 * (0.75 + 0.25 * Math.sin(performance.now() / 70)) : 0, 0.03);
+    }
     this.set(this.blowGain, 0.12 * Math.min(1.2, retP));
     this.freq(this.blowTone, 1200 + 500 * Math.min(1, retP));
     this.set(this.blowToneGain, 0.012 * Math.min(1, retP));
@@ -9031,6 +9208,7 @@ var PostFX = class {
       uniform mat4 uInvProj; uniform mat4 uCamWorld; uniform vec3 uCamPos;
       uniform vec3 uSunDir; uniform vec3 uSunColor; uniform vec3 uHazeColor; uniform float uHazeAmt; uniform float uHazeY;
       uniform float uExposure; uniform float uBloom; uniform float uUseAO; uniform float uTime; uniform float uNight;
+      uniform vec3 uTint; uniform float uSat; uniform float uContrast; uniform float uVig; uniform float uGrain; uniform float uScatter; uniform float uHazeK;
       vec3 RRTAndODTFit(vec3 v) {
         vec3 a = v * (v + 0.0245786) - 0.000090537;
         vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
@@ -9062,20 +9240,22 @@ var PostFX = class {
           vec3 rd = (wp - uCamPos) / max(dist, 0.001);
           float above = max(wp.y - uHazeY, 0.0);
           float rayAvg = max(0.5 * (wp.y + uCamPos.y) - uHazeY, 0.0);
-          float haze = (1.0 - exp(-dist * 0.0016)) * exp(-rayAvg / 70.0);
-          float sun = pow(max(dot(rd, uSunDir), 0.0), 5.0);
-          vec3 hc = uHazeColor + uSunColor * sun * 0.28;
+          float haze = (1.0 - exp(-dist * 0.0016 * uHazeK)) * exp(-rayAvg / 70.0);
+          float sunDot = max(dot(rd, uSunDir), 0.0);
+          // Dispersión hacia adelante: el polvo y la bruma brillan en dirección del sol
+          vec3 hc = uHazeColor + uSunColor * (pow(sunDot, 5.0) * 0.28 + pow(sunDot, 28.0) * uScatter);
           col = mix(col, hc, clamp(haze * uHazeAmt, 0.0, 0.8));
         }
         col += texture2D(tBloom, vUv).rgb * uBloom;
         col = ACES(col);
+        col *= uTint;
         float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
-        col = mix(vec3(l), col, 1.06);
-        col = mix(col, col * col * (3.0 - 2.0 * col), 0.16);
+        col = mix(vec3(l), col, uSat);
+        col = mix(col, col * col * (3.0 - 2.0 * col), uContrast);
         vec2 q = vUv - 0.5;
-        col *= 1.0 - dot(q, q) * 0.42;
+        col *= 1.0 - dot(q, q) * uVig;
         col = toSRGB(clamp(col, 0.0, 1.0));
-        col += (ign(gl_FragCoord.xy + fract(uTime) * 64.0) - 0.5) / 255.0 * 1.6;
+        col += (ign(gl_FragCoord.xy + fract(uTime * 7.0) * 211.0) - 0.5) * (1.6 / 255.0 + uGrain);
         gl_FragColor = vec4(col, 1.0);
       }`, {
       tScene: { value: this.rt.texture },
@@ -9094,7 +9274,14 @@ var PostFX = class {
       uBloom: { value: 0.05 },
       uUseAO: { value: 0 },
       uTime: { value: 0 },
-      uNight: { value: 0 }
+      uNight: { value: 0 },
+      uTint: { value: new THREE12.Vector3(1, 1, 1) },
+      uSat: { value: 1.06 },
+      uContrast: { value: 0.16 },
+      uVig: { value: 0.42 },
+      uGrain: { value: 0 },
+      uScatter: { value: 0.3 },
+      uHazeK: { value: 1 }
     });
   }
   setSize(w, h) {
@@ -9183,6 +9370,17 @@ var PostFX = class {
     }
     f.uExposure.value = r.toneMappingExposure;
     f.uTime.value = this.time;
+    // Gradación de color y atmósfera propias de cada simulación (director visual)
+    const g = env.grade;
+    if (g) {
+      f.uTint.value.copy(g.tint);
+      f.uSat.value = g.sat;
+      f.uContrast.value = g.contrast;
+      f.uVig.value = g.vig;
+      f.uGrain.value = g.grain;
+      f.uScatter.value = g.scatter;
+      f.uHazeK.value = g.hazeK;
+    }
     if (this.samples > 0) this.pass(this.mFinal, null);
     else {
       this.pass(this.mFinal, this.ldr);
@@ -9797,6 +9995,11 @@ var FireFX = class {
     this.glow.material.opacity = on * (this.sim.cond?.night ? 0.62 : 0.2) * (1 + 0.25 * Math.sin(this.t * 17));
     const gs = 7 + level * 17;
     this.glow.scale.set(gs, gs, 1);
+    // Luz del fuego sobre el suelo y el equipo
+    this.lp = this.lp || new THREE12.Vector3();
+    this.group.getWorldPosition(this.lp);
+    this.lp.y += 1.5;
+    this.sim.visual?.fireLight(this.lp, on * (0.3 + level), this.t);
     this.smoke.update(dt, { x: fx * 0.6, z: fz * 0.6 });
     this.powder.update(dt, { x: fx * 0.2, z: fz * 0.2 });
   }
@@ -9808,6 +10011,7 @@ var FireFX = class {
     this.smoke.mat.dispose();
     this.powder.mat.dispose();
     this.machine.body.remove(this.group);
+    this.sim.visual?.fireLight(null, 0);
     this.flame.dispose();
     this.glow.material.dispose();
   }
@@ -9830,6 +10034,7 @@ var StormFX = class {
     env.hemi.intensity = this.hemi0;
     sim.scene.environmentIntensity *= 0.6;
     AMBIENT_SKY.value.copy(env.ambientSky).multiplyScalar(0.72);
+    AMBIENT_GROUND.value.copy(env.ambientGround).multiplyScalar(0.6);
     // Rayo visible: una cinta quebrada, muy brillante, que dura unas décimas de segundo
     this.MAX_QUADS = 90;
     this.boltT = 0;
@@ -9880,6 +10085,7 @@ var StormFX = class {
   strike(strength = 1) {
     this.flash = strength;
     this.spawnBolt(strength);
+    this.sim.visual?.lightning(strength);
     const delay = 0.5 + Math.random() * 1.6;
     this.thunders.push({ t: delay, s: 0.5 + strength * 0.5 });
   }
@@ -9994,6 +10200,53 @@ var evStop = (group, label = "Detener el camión", say = "Detén el camión.") =
 var evHazard = (group) => evStep("hazard", "Luces de emergencia", group, EV_DETECT.hazard, "Enciende las luces de emergencia (tecla X).", EV_WHY.hazard, "Tecla X después del evento", "Luces");
 var evParking = (group) => evStep("parking", "Freno de parqueo", group, EV_DETECT.parking, "Aplica el freno de parqueo (tecla P).", EV_WHY.parking, "Tecla P con el camión detenido", "Parqueo");
 var evRadio = (group, say = "Avisa por radio (mantén la tecla R): emergencia, tu unidad, qué ocurre y tu ubicación.") => evStep("radio", "Aviso por radio", group, null, say, EV_WHY.radio, "Botón de radio presionado al menos 1 s", "Radio");
+// Tecla que cumple cada paso, para mostrarla junto al paso en el panel del procedimiento (modo entrenamiento).
+// "A/D": cualquiera de las dos · "3+W": una y después la otra · ":mantén": mantenerla presionada · null: sin tecla
+var STEP_KEYS = {
+  retarder: "Espacio",
+  reduce: "Espacio",
+  service: "S",
+  brake: "S",
+  slow: "S",
+  stop: "S",
+  ebrake: "B",
+  hazard: "X",
+  parking: "P",
+  radio: "R:mantén",
+  horn: "H",
+  resume: "H",
+  escape: "A/D",
+  correct: "A/D",
+  hold: "A/D",
+  engine: "M",
+  suppress: "F",
+  evacuate: "V",
+  bucket: "J:mantén",
+  lower: "J:mantén",
+  mast: "J:mantén",
+  drill: "K",
+  away: "3+W",
+  wait: null,
+  stay: null
+};
+// Simulaciones donde el mismo paso se cumple con otro mando, según la indicación del tutor
+var STEP_KEYS_BY_SCENARIO = {
+  "frenos-sobrecalentamiento": { slow: "Espacio" },
+  "cargador-frenos": { stop: "J:mantén" },
+  "cargador-balde-alto": { reduce: "S" }
+};
+function stepKey(scenarioId, step) {
+  const own = STEP_KEYS_BY_SCENARIO[scenarioId];
+  if (own && step.id in own) return own[step.id];
+  return STEP_KEYS[step.id] ?? null;
+}
+function stepKeyHtml(spec) {
+  if (!spec) return "";
+  const [keys, note] = spec.split(":");
+  const seq = keys.includes("+");
+  const caps = keys.split(seq ? "+" : "/").map((k) => `<kbd>${k}</kbd>`).join(seq ? "+" : " ");
+  return `<span class="pk" title="Tecla para cumplir este paso">${caps}${note ? `<small>${note}</small>` : ""}</span>`;
+}
 var CaexEventScenario = class extends Scenario {
   constructor(opts) {
     super(opts);
@@ -11794,6 +12047,16 @@ var SCENARIO_CATALOG = [
         sim.truck.root.localToWorld(p);
         sim.dust.emit(p.x, p.y, p.z, (Math.random() - 0.5) * 4, 1 + Math.random() * 2, (Math.random() - 0.5) * 4, 3 + Math.random() * 3, 2.5, 0.35);
       }
+      // Estallido: chispas, humo de caucho y la llanta que se aplasta
+      const pb = new THREE12.Vector3(sc.v.side * 3.3, 0.9, TRUCK_DIMS.frontAxleZ);
+      sim.truck.root.localToWorld(pb);
+      sim.visual?.sparks.emit(pb.x, pb.y, pb.z, 0, 2, 0, 40, 6);
+      for (let k = 0; k < 12; k++) sim.visual?.smoke.emit(pb.x, pb.y, pb.z, (Math.random() - 0.5) * 3, 1 + Math.random() * 2, (Math.random() - 0.5) * 3, 2 + Math.random() * 2, 3 + Math.random() * 2, 0.3);
+      const flat = sc.v.side > 0 ? sim.truck.frontL : sim.truck.frontR;
+      if (flat) {
+        flat.scale.set(1, 0.9, 0.97);
+        flat.position.y = TRUCK_DIMS.tireR * 0.9;
+      }
     },
     tick(sc, c) {
       sc.obs.maxDev = +Math.max(sc.obs.maxDev, Math.abs(c.lat - sc.v.lat0)).toFixed(1);
@@ -12591,8 +12854,836 @@ function buildEventDebrief(rec, history, def) {
 
 // js/sim/simulator.js
 var FIXED = 1 / 120;
-var CAMERAS = ["cabina", "exterior", "retroceso", "dron", "superior"];
-var CAMERA_LABELS = { cabina: "Cabina", exterior: "Exterior", retroceso: "Retroceso", dron: "Dron", superior: "Planta" };
+var CAMERAS = ["cabina", "exterior", "retroceso", "cine", "dron", "superior"];
+var CAMERA_LABELS = { cabina: "Cabina", exterior: "Exterior", retroceso: "Retroceso", cine: "Cine", dron: "Dron", superior: "Planta" };
+// js/sim/visual.js
+// Motor visual unificado: perfiles por simulación, luz dinámica de los efectos, partículas ambientales,
+// suspensión, huellas, chispas, calor de frenos, espejos, cámara cinematográfica, escenografía y nivel de detalle.
+// Todo es visual: la física, los procedimientos y la evaluación no dependen de nada de este módulo.
+var FX_LIGHT = { pos: { value: new THREE12.Vector3() }, col: { value: new THREE12.Color(0, 0, 0) }, r: { value: 30 }, flash: { value: new THREE12.Color(0, 0, 0) } };
+// Luz del fuego y destello del rayo sobre suelo, vía y máquinas, sin agregar luces de three.js (no recompila)
+function addFxLight(material) {
+  return addPatch(material, "fxlight", (shader) => {
+    shader.uniforms.uFxPos = FX_LIGHT.pos;
+    shader.uniforms.uFxCol = FX_LIGHT.col;
+    shader.uniforms.uFxR = FX_LIGHT.r;
+    shader.uniforms.uFxFlash = FX_LIGHT.flash;
+    shader.fragmentShader = shader.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uFxPos;\nuniform vec3 uFxCol;\nuniform float uFxR;\nuniform vec3 uFxFlash;").replace("#include <lights_fragment_end>", `#include <lights_fragment_end>
+      {
+        vec3 fxV = (viewMatrix * vec4(uFxPos, 1.0)).xyz + vViewPosition;
+        float fxD = length(fxV);
+        float fxA = max(0.0, 1.0 - fxD / uFxR);
+        reflectedLight.indirectDiffuse += material.diffuseColor * (uFxCol * fxA * fxA * max(dot(normal, fxV / max(fxD, 1e-3)), 0.0) + uFxFlash);
+      }`);
+  });
+}
+// Aplica la luz de efectos a todos los materiales de suelo, vía, rocas y máquinas de la escena
+function applyFxLight(root) {
+  const seen = /* @__PURE__ */ new Set();
+  root.traverse((o) => {
+    const list = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of list) {
+      if (seen.has(m) || !m.isMeshStandardMaterial) continue;
+      seen.add(m);
+      const keys = (m.userData.patches || []).map((p) => p.key);
+      if (keys.some((k) => k === "cheapamb" || k === "grime" || k === "bake" || k.startsWith("rubble"))) addFxLight(m);
+    }
+  });
+}
+// ---------------------------------------------------------------- Perfiles visuales
+// Gradación y atmósfera por módulo; cada simulación puede ajustar lo suyo. "heat" activa el calor de frenos,
+// "dressing" carga la escenografía propia (frente de carguío, malla de perforación).
+var VISUAL_MODULE = {
+  frenos: { tint: [1.03, 1, 0.96], sat: 1.05, contrast: 0.17, scatter: 0.35, hazeK: 1, motes: 0.6, dust: 1.1, heat: 1 },
+  naturales: { tint: [0.98, 0.99, 1.02], sat: 0.97, contrast: 0.16, scatter: 0.25, hazeK: 1.1, motes: 0.45, dust: 1 },
+  transito: { tint: [1.01, 1, 0.99], sat: 1.04, contrast: 0.16, scatter: 0.3, hazeK: 1, motes: 0.5, dust: 1 },
+  motor: { tint: [1.02, 0.99, 0.95], sat: 1.04, contrast: 0.18, scatter: 0.3, hazeK: 1, motes: 0.55, dust: 1, heat: 0.6 },
+  cargador: { tint: [1.03, 0.99, 0.94], sat: 1.03, contrast: 0.16, scatter: 0.45, hazeK: 1.2, motes: 1, dust: 1.3 },
+  perforadora: { tint: [1, 0.99, 0.97], sat: 1, contrast: 0.16, scatter: 0.4, hazeK: 1.15, motes: 0.9, dust: 1.2, dressing: "malla" }
+};
+var VISUAL_SCENARIO = {
+  "frenos-sobrecalentamiento": { heat: 1.5, tint: [1.05, 0.99, 0.93] },
+  "frenos-retardador": { heat: 1.2 },
+  "frenos-presion": { heat: 0.8 },
+  "frenos-parqueo": { motes: 0.9, dust: 1.2 },
+  "natural-tormenta": { sat: 0.84, tint: [0.93, 0.97, 1.04], contrast: 0.2, motes: 0, scatter: 0.1 },
+  "natural-neblina": { sat: 0.86, tint: [0.97, 0.99, 1.02], contrast: 0.12, motes: 0.2, scatter: 0.6 },
+  "natural-sismo": { quakeDust: 1, dust: 1.3 },
+  "natural-rocas": { dust: 1.2, motes: 0.8 },
+  "natural-huaico": { sat: 0.92, tint: [0.97, 0.98, 1.01] },
+  "transito-fatiga": { vig: 0.62, grain: 0.012, sat: 0.9 },
+  "transito-borde": { motes: 0.8, scatter: 0.4 },
+  "motor-incendio": { tint: [1.03, 0.98, 0.94] },
+  "motor-reventon": { dust: 1.2 },
+  "cargador-frenos": { heat: 0.7 },
+  // La pila del frente de carguío solo aparece donde el cargador se aleja de ella: no cambia ningún desenlace
+  "cargador-retroceso": { dressing: "frente" },
+  "perforadora-cresta": { crest: true }
+};
+var VISUAL_BASE = { tint: [1, 1, 1], sat: 1.06, contrast: 0.16, vig: 0.42, grain: 0, scatter: 0.3, hazeK: 1, motes: 0.5, dust: 1, heat: 0, quakeDust: 0, dressing: null, crest: false };
+function visualProfile(def, cfg, cond) {
+  const p = { ...VISUAL_BASE, ...VISUAL_MODULE[def?.module] || {}, ...VISUAL_SCENARIO[def?.id] || {} };
+  if (cond?.night) {
+    p.vig = Math.max(p.vig, 0.55);
+    p.grain = Math.max(p.grain, 0.008);
+    p.motes *= 0.4;
+    p.scatter *= 0.3;
+  }
+  const w = cfg?.weather || "despejado";
+  if (w === "lluvia") {
+    p.motes = 0;
+    p.sat *= 0.9;
+  } else if (w === "neblina") {
+    p.motes *= 0.4;
+    p.sat *= 0.92;
+  } else if (w === "polvo") {
+    p.motes *= 1.8;
+    p.scatter *= 1.5;
+    p.hazeK *= 1.4;
+  }
+  return p;
+}
+// ---------------------------------------------------------------- Partículas ambientales
+var MOTE_VERT = `
+  attribute float aSeed;
+  uniform float uScale; uniform float uSize; uniform float uT;
+  varying float vA;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    float d = max(-mv.z, 0.3);
+    gl_PointSize = clamp(uSize * (0.6 + aSeed) * uScale / d, 1.0, 18.0);
+    vA = (0.55 + 0.45 * sin(uT * (0.7 + aSeed * 1.6) + aSeed * 40.0)) * smoothstep(0.5, 2.0, d) * (1.0 - smoothstep(14.0, 22.0, d));
+    gl_Position = projectionMatrix * mv;
+  }`;
+var MOTE_FRAG = `
+  uniform vec3 uColor; uniform float uAlpha;
+  varying float vA;
+  void main() {
+    vec2 q = gl_PointCoord - 0.5;
+    float a = smoothstep(0.5, 0.05, length(q)) * vA * uAlpha;
+    if (a < 0.003) discard;
+    gl_FragColor = vec4(uColor, a);
+  }`;
+var AmbientMotes = class {
+  constructor(scene, n = 420) {
+    this.n = n;
+    this.box = 18;
+    this.pos = new Float32Array(n * 3);
+    const seed = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      this.pos[i * 3] = (Math.random() - 0.5) * 2 * this.box;
+      this.pos[i * 3 + 1] = Math.random() * 10 - 2;
+      this.pos[i * 3 + 2] = (Math.random() - 0.5) * 2 * this.box;
+      seed[i] = Math.random();
+    }
+    const geo = new THREE12.BufferGeometry();
+    geo.setAttribute("position", new THREE12.BufferAttribute(this.pos, 3).setUsage(THREE12.DynamicDrawUsage));
+    geo.setAttribute("aSeed", new THREE12.BufferAttribute(seed, 1));
+    this.geo = geo;
+    this.mat = new THREE12.ShaderMaterial({ vertexShader: MOTE_VERT, fragmentShader: MOTE_FRAG, transparent: true, depthWrite: false, uniforms: { uScale: { value: 600 }, uSize: { value: 0.026 }, uT: { value: 0 }, uColor: { value: new THREE12.Color(1, 0.94, 0.82) }, uAlpha: { value: 0.5 } } });
+    this.points = new THREE12.Points(geo, this.mat);
+    this.points.frustumCulled = false;
+    this.points.renderOrder = 4;
+    this.center = new THREE12.Vector3();
+    scene.add(this.points);
+  }
+  setLook({ amount = 0.5, color = null, light = 1 } = {}) {
+    this.points.visible = amount > 0.02;
+    this.mat.uniforms.uAlpha.value = Math.min(0.7, amount * 0.5) * light;
+    if (color) this.mat.uniforms.uColor.value.copy(color);
+  }
+  setViewport(h, fov) {
+    this.mat.uniforms.uScale.value = h / (2 * Math.tan(THREE12.MathUtils.degToRad(fov) / 2));
+  }
+  update(dt, cam, wind) {
+    if (!this.points.visible || this.off) return;
+    this.mat.uniforms.uT.value += dt;
+    const c = this.center, B = this.box;
+    cam.getWorldPosition(c);
+    const p = this.pos, t = this.mat.uniforms.uT.value;
+    for (let i = 0; i < this.n; i++) {
+      const k = i * 3;
+      p[k] += (wind.x + Math.sin(t * 0.6 + i) * 0.15) * dt;
+      p[k + 1] += (Math.sin(t * 0.4 + i * 1.7) * 0.06 - 0.02) * dt;
+      p[k + 2] += (wind.z + Math.cos(t * 0.5 + i * 0.7) * 0.15) * dt;
+      let dx = p[k] - c.x, dz = p[k + 2] - c.z, dy = p[k + 1] - c.y;
+      if (dx > B) p[k] -= 2 * B;
+      else if (dx < -B) p[k] += 2 * B;
+      if (dz > B) p[k + 2] -= 2 * B;
+      else if (dz < -B) p[k + 2] += 2 * B;
+      if (dy > 8) p[k + 1] -= 11;
+      else if (dy < -3) p[k + 1] += 11;
+    }
+    this.geo.attributes.position.needsUpdate = true;
+  }
+};
+// ---------------------------------------------------------------- Chispas
+var SPARK_VERT = `
+  attribute float aLife;
+  uniform float uScale;
+  varying float vL;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vL = aLife;
+    gl_PointSize = clamp(0.09 * uScale / max(-mv.z, 0.5), 1.0, 10.0) * step(0.001, aLife);
+    gl_Position = projectionMatrix * mv;
+  }`;
+var SPARK_FRAG = `
+  varying float vL;
+  void main() {
+    vec2 q = gl_PointCoord - 0.5;
+    float a = smoothstep(0.5, 0.0, length(q)) * vL;
+    if (a < 0.01) discard;
+    gl_FragColor = vec4(vec3(5.0, 2.4, 0.7) * a, a);
+  }`;
+var Sparks = class {
+  constructor(scene, n = 260) {
+    this.n = n;
+    this.i = 0;
+    this.pos = new Float32Array(n * 3);
+    this.vel = new Float32Array(n * 3);
+    this.life = new Float32Array(n);
+    const geo = new THREE12.BufferGeometry();
+    geo.setAttribute("position", new THREE12.BufferAttribute(this.pos, 3).setUsage(THREE12.DynamicDrawUsage));
+    geo.setAttribute("aLife", new THREE12.BufferAttribute(this.life, 1).setUsage(THREE12.DynamicDrawUsage));
+    this.geo = geo;
+    this.mat = new THREE12.ShaderMaterial({ vertexShader: SPARK_VERT, fragmentShader: SPARK_FRAG, transparent: true, depthWrite: false, blending: THREE12.AdditiveBlending, uniforms: { uScale: { value: 600 } } });
+    this.points = new THREE12.Points(geo, this.mat);
+    this.points.frustumCulled = false;
+    this.points.renderOrder = 6;
+    this.active = 0;
+    scene.add(this.points);
+  }
+  setViewport(h, fov) {
+    this.mat.uniforms.uScale.value = h / (2 * Math.tan(THREE12.MathUtils.degToRad(fov) / 2));
+  }
+  emit(x, y, z, vx, vy, vz, count = 6, spread = 3) {
+    for (let k = 0; k < count; k++) {
+      const i = this.i = (this.i + 1) % this.n;
+      this.pos[i * 3] = x;
+      this.pos[i * 3 + 1] = y;
+      this.pos[i * 3 + 2] = z;
+      this.vel[i * 3] = vx + (Math.random() - 0.5) * spread;
+      this.vel[i * 3 + 1] = vy + Math.random() * spread * 0.8;
+      this.vel[i * 3 + 2] = vz + (Math.random() - 0.5) * spread;
+      this.life[i] = 0.5 + Math.random() * 0.5;
+    }
+    this.active = 1.2;
+  }
+  update(dt) {
+    if (this.active <= 0) return;
+    this.active -= dt;
+    for (let i = 0; i < this.n; i++) {
+      if (this.life[i] <= 0) continue;
+      this.life[i] = Math.max(0, this.life[i] - dt * 1.4);
+      this.vel[i * 3 + 1] -= 9.8 * dt;
+      this.pos[i * 3] += this.vel[i * 3] * dt;
+      this.pos[i * 3 + 1] += this.vel[i * 3 + 1] * dt;
+      this.pos[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
+    }
+    this.geo.attributes.position.needsUpdate = true;
+    this.geo.attributes.aLife.needsUpdate = true;
+  }
+};
+// ---------------------------------------------------------------- Huellas de neumático y oruga
+function treadTextureMarks() {
+  return cached("treadMarks", () => {
+    const c = makeCanvas(64, 128);
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "rgb(150,150,150)";
+    ctx.fillRect(0, 0, 64, 128);
+    ctx.fillStyle = "rgb(40,40,40)";
+    for (let y = 0; y < 128; y += 16) {
+      ctx.beginPath();
+      ctx.moveTo(2, y);
+      ctx.lineTo(30, y + 7);
+      ctx.lineTo(30, y + 13);
+      ctx.lineTo(2, y + 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(62, y);
+      ctx.lineTo(34, y + 7);
+      ctx.lineTo(34, y + 13);
+      ctx.lineTo(62, y + 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+    const t = toTexture(c, { srgb: false });
+    t.wrapS = t.wrapT = THREE12.RepeatWrapping;
+    return t;
+  });
+}
+var TrackMarks = class {
+  constructor(scene, max = 1100) {
+    this.max = max;
+    this.head = 0;
+    this.count = 0;
+    const pos = new Float32Array(max * 12), col = new Float32Array(max * 16), uv = new Float32Array(max * 8), idx = new Uint32Array(max * 6);
+    const nor = new Float32Array(max * 12);
+    for (let i = 0; i < max; i++) {
+      const b = i * 4;
+      // Caras hacia arriba
+      idx.set([b, b + 2, b + 1, b, b + 3, b + 2], i * 6);
+      for (let v = 0; v < 4; v++) nor[(b + v) * 3 + 1] = 1;
+    }
+    const geo = new THREE12.BufferGeometry();
+    geo.setAttribute("position", new THREE12.BufferAttribute(pos, 3).setUsage(THREE12.DynamicDrawUsage));
+    geo.setAttribute("normal", new THREE12.BufferAttribute(nor, 3));
+    geo.setAttribute("color", new THREE12.BufferAttribute(col, 4).setUsage(THREE12.DynamicDrawUsage));
+    geo.setAttribute("uv", new THREE12.BufferAttribute(uv, 2).setUsage(THREE12.DynamicDrawUsage));
+    geo.setIndex(new THREE12.BufferAttribute(idx, 1));
+    this.geo = geo;
+    this.mat = new THREE12.MeshStandardMaterial({ map: treadTextureMarks(), vertexColors: true, transparent: true, depthWrite: false, roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6 });
+    addCheapAmbient(this.mat);
+    this.mesh = new THREE12.Mesh(geo, this.mat);
+    this.mesh.frustumCulled = false;
+    this.mesh.receiveShadow = true;
+    this.mesh.renderOrder = 1;
+    scene.add(this.mesh);
+    this.wheels = [];
+    this.tmp = new THREE12.Vector3();
+    this.wet = false;
+  }
+  setWheels(list) {
+    this.wheels = list.map((w) => ({ ...w, last: null, along: 0 }));
+  }
+  reset() {
+    this.count = 0;
+    this.head = 0;
+    this.geo.attributes.color.array.fill(0);
+    this.geo.attributes.color.needsUpdate = true;
+    for (const w of this.wheels) w.last = null;
+  }
+  update(root, dyn, sim) {
+    if (!this.wheels.length || Math.abs(dyn.v) < 0.25) return;
+    let added = false;
+    const q = this.q || (this.q = {});
+    const path = dyn.loc?.path || sim.world.course.main;
+    for (const w of this.wheels) {
+      const p = this.tmp.set(w.x, 0, w.z).applyMatrix4(root.matrixWorld);
+      // Sobre la superficie real de la vía, que tiene bombeo hacia el centro
+      path.nearest(p.x, p.z, w.hint ?? -1, q);
+      w.hint = q.i;
+      const lane = path.kind === "escape";
+      p.y = q.y + (lane ? 0.06 : 0.22 * (1 - Math.pow(Math.min(1, Math.abs(2 * q.lat / (q.width || 32))), 2))) + 0.07;
+      if (!w.last) {
+        w.last = p.clone();
+        continue;
+      }
+      const d = p.distanceTo(w.last);
+      if (d < 1.1) continue;
+      if (d > 6) {
+        w.last.copy(p);
+        continue;
+      }
+      this.addQuad(w.last, p, w.w, w.along, w.along + d / (w.w * 1.6));
+      w.along += d / (w.w * 1.6);
+      w.last.copy(p);
+      added = true;
+    }
+    if (added) this.fade();
+  }
+  addQuad(a, b, width, v0, v1) {
+    const i = this.head;
+    this.head = (this.head + 1) % this.max;
+    this.count = Math.min(this.max, this.count + 1);
+    const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz) || 1;
+    const nx = -dz / len * width / 2, nz = dx / len * width / 2;
+    const P = this.geo.attributes.position.array, U = this.geo.attributes.uv.array;
+    P.set([a.x + nx, a.y, a.z + nz, a.x - nx, a.y, a.z - nz, b.x - nx, b.y, b.z - nz, b.x + nx, b.y, b.z + nz], i * 12);
+    U.set([0, v0, 1, v0, 1, v1, 0, v1], i * 8);
+    this.geo.attributes.position.needsUpdate = true;
+    this.geo.attributes.uv.needsUpdate = true;
+  }
+  fade() {
+    const C = this.geo.attributes.color.array;
+    const base = this.wet ? 0.66 : 0.5, shade = this.wet ? 0.07 : 0.15;
+    for (let k = 0; k < this.count; k++) {
+      const i = (this.head - 1 - k + this.max) % this.max;
+      const a = base * (1 - k / this.max) * Math.min(1, (k + 1) / 3);
+      for (let v = 0; v < 4; v++) C.set([shade, shade * 0.9, shade * 0.78, a], (i * 4 + v) * 4);
+    }
+    this.geo.attributes.color.needsUpdate = true;
+  }
+};
+// ---------------------------------------------------------------- Espejos retrovisores
+// Cada espejo tiene su propia cámara que mira el reflejo de la línea de visión del operador. Solo se dibuja
+// cuando el espejo está a la vista, en baja resolución y sin recalcular sombras.
+var MirrorSystem = class {
+  constructor(renderer) {
+    this.r = renderer;
+    this.list = [];
+    this.frame = 0;
+    this.size = [224, 336];
+    this.enabled = true;
+    this.frustum = new THREE12.Frustum();
+    this.mtx = new THREE12.Matrix4();
+    this.sphere = new THREE12.Sphere();
+    this.tmpA = new THREE12.Vector3();
+    this.tmpB = new THREE12.Vector3();
+    this.tmpN = new THREE12.Vector3();
+  }
+  setQuality(q) {
+    this.enabled = q !== "baja";
+    this.size = q === "alta" ? [288, 432] : [208, 312];
+    for (const m of this.list) m.rt.setSize(...this.size);
+  }
+  attach(machine) {
+    if (machine.mirrorSet) {
+      this.list = machine.mirrorSet;
+      return;
+    }
+    const list = [];
+    for (const def of machine.mirrors || []) {
+      const rt = new THREE12.WebGLRenderTarget(this.size[0], this.size[1], { type: THREE12.HalfFloatType, minFilter: THREE12.LinearFilter, magFilter: THREE12.LinearFilter });
+      rt.texture.repeat.set(-1, 1);
+      rt.texture.offset.set(1, 0);
+      const mat = new THREE12.MeshBasicMaterial({ map: rt.texture, color: new THREE12.Color(0.92, 0.94, 0.96) });
+      const mesh = new THREE12.Mesh(new THREE12.PlaneGeometry(def.w, def.h), mat);
+      mesh.position.set(...def.pos);
+      mesh.rotation.y = def.ry;
+      machine.body.add(mesh);
+      const cam = new THREE12.PerspectiveCamera(def.fov || 30, def.w / def.h, 0.5, 900);
+      list.push({ mesh, rt, cam, mat });
+    }
+    machine.mirrorSet = list;
+    this.list = list;
+  }
+  render(scene, mainCam, eyeWorld, xr) {
+    if (!this.enabled || !this.list.length) return;
+    this.frame++;
+    mainCam.updateMatrixWorld();
+    this.mtx.multiplyMatrices(mainCam.projectionMatrix, mainCam.matrixWorldInverse);
+    this.frustum.setFromProjectionMatrix(this.mtx);
+    const r = this.r;
+    const prevTarget = r.getRenderTarget();
+    const prevAuto = r.shadowMap.autoUpdate;
+    const prevXR = r.xr.enabled;
+    let did = false;
+    this.list.forEach((m, k) => {
+      if (m.drawn && (this.frame + k) % (this.skip || 2)) return;
+      m.mesh.updateMatrixWorld();
+      m.mesh.getWorldPosition(this.tmpA);
+      this.sphere.set(this.tmpA, 0.8);
+      if (!this.frustum.intersectsSphere(this.sphere)) return;
+      // Normal del espejo (su cara mira hacia +z local) y dirección reflejada de la mirada
+      this.tmpN.set(0, 0, 1).transformDirection(m.mesh.matrixWorld);
+      const view = this.tmpB.subVectors(this.tmpA, eyeWorld).normalize();
+      const refl = view.sub(this.tmpN.clone().multiplyScalar(2 * view.dot(this.tmpN)));
+      m.cam.position.copy(this.tmpA).addScaledVector(this.tmpN, 0.06);
+      m.cam.up.set(0, 1, 0);
+      m.cam.lookAt(this.tmpA.clone().add(refl));
+      m.cam.updateMatrixWorld();
+      if (!did) {
+        r.shadowMap.autoUpdate = false;
+        r.xr.enabled = false;
+        did = true;
+      }
+      m.mesh.visible = false;
+      r.setRenderTarget(m.rt);
+      r.render(scene, m.cam);
+      m.mesh.visible = true;
+      m.drawn = true;
+    });
+    if (did) {
+      r.setRenderTarget(prevTarget);
+      r.shadowMap.autoUpdate = prevAuto;
+      r.xr.enabled = prevXR;
+    }
+  }
+};
+// ---------------------------------------------------------------- Nivel de detalle por distancia
+var CullManager = class {
+  constructor() {
+    this.items = [];
+    this.trucks = [];
+    this.k = 0;
+    this.p = new THREE12.Vector3();
+  }
+  add(obj, maxDist) {
+    obj.updateWorldMatrix(true, false);
+    this.items.push({ obj, pos: obj.getWorldPosition(new THREE12.Vector3()), d2: maxDist * maxDist });
+  }
+  addTruck(t, near = 150) {
+    if (t.setDetail) this.trucks.push({ t, d2: near * near });
+  }
+  update(cam, force = false) {
+    if (!force && this.k++ % 6) return;
+    cam.getWorldPosition(this.p);
+    for (const it of this.items) it.obj.visible = it.pos.distanceToSquared(this.p) < it.d2;
+    for (const it of this.trucks) {
+      if (!it.t.root.visible) continue;
+      it.t.setDetail(it.t.root.position.distanceToSquared(this.p) < it.d2);
+    }
+  }
+};
+// ---------------------------------------------------------------- Cámara cinematográfica
+// Cortes cada pocos segundos entre planos de ingeniería: rueda, travelling lateral, grúa, frontal bajo y plano fijo en la vía
+var CINE_SHOTS = ["rueda", "lateral", "grua", "frontal", "fijo", "hombro"];
+function cineCamera(sim, dt, cam) {
+  const d = sim.dyn, c = sim.cine || (sim.cine = { t: 0, i: 0, fixed: null });
+  c.t += dt;
+  if (c.t > 6.5) {
+    c.t = 0;
+    c.i = (c.i + 1) % CINE_SHOTS.length;
+    c.fixed = null;
+  }
+  const L = PLAYER.front - PLAYER.rear, W = PLAYER.halfWidth;
+  const fx = Math.sin(d.heading), fz = Math.cos(d.heading), lx = fz, lz = -fx;
+  // Los planos laterales van del lado con más vía libre, para que la berma no tape la máquina
+  if (c.side == null || c.t === 0) c.side = (sim.lastLat || 0) > 0 ? -1 : 1;
+  const sd = c.side;
+  const at = (side, up, fwd) => new THREE12.Vector3(d.x + lx * side * sd + fx * fwd, d.y + up, d.z + lz * side * sd + fz * fwd);
+  const k = c.t / 6.5;
+  let pos, tgt;
+  switch (CINE_SHOTS[c.i]) {
+    case "rueda":
+      pos = at(W + 2.2, 1.1, L * 0.28 + 3 - k * 2);
+      tgt = at(0, L * 0.18, -L * 0.1);
+      break;
+    case "lateral":
+      pos = at(W + L * 0.75, L * 0.22, -L * 0.4 + k * L * 0.8);
+      tgt = at(0, L * 0.16, 0);
+      break;
+    case "grua":
+      pos = at(-L * 0.5, L * 0.5 + k * L * 0.5, -L * 1.4);
+      tgt = at(0, L * 0.12, L * 0.6);
+      break;
+    case "frontal":
+      pos = at(-W * 0.6, 1.4, L * 1.5 - k * L * 0.4);
+      tgt = at(0, L * 0.22, 0);
+      break;
+    case "fijo": {
+      if (!c.fixed) {
+        const q = {};
+        sim.world.course.main.toWorld((sim.lastMainS ?? 0) + Math.sign(d.v || 1) * 70, -(sim.world.course.width * 0.5 + 4) * Math.sign(sim.lastLat || 1), q);
+        c.fixed = new THREE12.Vector3(q.x, q.y + 2.2, q.z);
+      }
+      pos = c.fixed.clone();
+      tgt = at(0, L * 0.15, 0);
+      break;
+    }
+    default:
+      pos = at(W * 0.9, L * 0.45, -L * 0.75);
+      tgt = at(0, L * 0.12, L * 1.6);
+  }
+  const ground = sim.world.terrain.heightAt(pos.x, pos.z) + 0.8;
+  if (pos.y < ground) pos.y = ground;
+  cam.position.copy(pos);
+  cam.position.y += Math.sin(c.t * 1.3) * 0.05 + Math.sin(c.t * 2.9) * 0.025;
+  cam.lookAt(tgt);
+}
+// ---------------------------------------------------------------- Escenografía propia de cada módulo
+function buildMuckPile(sim) {
+  const g = new THREE12.Group();
+  g.name = "frente-carguio";
+  const q = {};
+  const main = sim.world.course.main;
+  main.toWorld(92, -2, q);
+  const geo = new THREE12.SphereGeometry(1, 48, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const n = 0.75 + fbm(x * 2.4 + 9, z * 2.4, { octaves: 4, seed: 57 }) * 0.5;
+    const face = z > 0 ? 1 - 0.35 * z * y : 1;
+    p.setXYZ(i, x * 10.5, y * 5.8 * n * face, z * 9.5);
+  }
+  geo.computeVertexNormals();
+  geo.setAttribute("color", new THREE12.BufferAttribute(new Float32Array(p.count * 3).fill(0.93), 3));
+  const pile = new THREE12.Mesh(geo, mats().pile);
+  pile.castShadow = pile.receiveShadow = true;
+  pile.position.set(q.x, q.y - 0.3, q.z);
+  pile.rotation.y = q.heading + Math.PI;
+  g.add(pile);
+  // Bolones sueltos al pie del frente
+  const rand = mulberry32(73);
+  const list = [];
+  for (let k = 0; k < 70; k++) {
+    const a = rand() * Math.PI * 2, rr = 7 + rand() * 6;
+    const x = q.x + Math.cos(a) * rr * 1.05, z = q.z + Math.sin(a) * rr * 0.95;
+    const s = 0.25 + Math.pow(rand(), 2.4) * 1.1;
+    list.push({ x, y: q.y + s * 0.2, z, s, rx: rand() * 3, ry: rand() * 6.3, rz: rand() * 3, tone: 0.75 + rand() * 0.4 });
+  }
+  g.add(rockInstances(chiseledRock(1, 9, 404), list));
+  const sign = buildSign("info", "FRENTE DE CARGUÍO", "CARGADOR 07", 2.8);
+  main.toWorld(80, 14, q);
+  sign.position.set(q.x, q.y, q.z);
+  sign.rotation.y = q.heading + Math.PI;
+  g.add(sign);
+  g.userData.obstacle = { x: pile.position.x, z: pile.position.z, heading: q.heading, hl: 9.5, hw: 10, label: "Pila de material" };
+  return g;
+}
+function buildDrillPattern(sim) {
+  const g = new THREE12.Group();
+  g.name = "malla-perforacion";
+  const q = {};
+  const main = sim.world.course.main;
+  const holes = [], stakes = [];
+  for (let s = 42; s <= 98; s += 6) {
+    for (let lat = -22; lat <= 16; lat += 6) {
+      const jitter = (Math.sin(s * 12.9 + lat * 7.1) * 0.5) * 0.6;
+      main.toWorld(s + jitter, lat - jitter, q);
+      holes.push({ x: q.x, y: q.y, z: q.z, done: (s * 7 + lat * 3) % 5 !== 0 });
+      if ((s + lat) % 12 === 0) stakes.push({ x: q.x + 0.9, y: q.y, z: q.z });
+    }
+  }
+  const m = mats();
+  const coneGeo = new THREE12.CylinderGeometry(0.22, 0.85, 0.18, 14, 1, true);
+  coneGeo.translate(0, 0.09, 0);
+  const cuttings = new THREE12.InstancedMesh(coneGeo, m.grey, holes.length);
+  const holeGeo = new THREE12.CircleGeometry(0.2, 12);
+  holeGeo.rotateX(-Math.PI / 2);
+  const holeMat = new THREE12.MeshBasicMaterial({ color: 1315860, polygonOffset: true, polygonOffsetFactor: -2 });
+  const hole = new THREE12.InstancedMesh(holeGeo, holeMat, holes.length);
+  const d = new THREE12.Object3D();
+  holes.forEach((h, i) => {
+    d.position.set(h.x, h.y + 0.04, h.z);
+    d.rotation.set(0, i * 1.7, 0);
+    d.scale.setScalar(h.done ? 1 : 0.001);
+    d.updateMatrix();
+    cuttings.setMatrixAt(i, d.matrix);
+    d.position.y = h.y + 0.2;
+    d.scale.setScalar(h.done ? 1 : 0.6);
+    d.updateMatrix();
+    hole.setMatrixAt(i, d.matrix);
+  });
+  cuttings.receiveShadow = true;
+  g.add(cuttings, hole);
+  // Estacas con banderines rosados del diseño de perforación
+  const stakeGeo = new THREE12.BoxGeometry(0.05, 1.1, 0.05);
+  stakeGeo.translate(0, 0.55, 0);
+  const flagGeo = new THREE12.PlaneGeometry(0.28, 0.18);
+  flagGeo.translate(0.15, 1.0, 0);
+  const stakeMesh = new THREE12.InstancedMesh(stakeGeo, m.post, stakes.length);
+  const flagMesh = new THREE12.InstancedMesh(flagGeo, new THREE12.MeshStandardMaterial({ color: 16729231, emissive: 3342353, side: THREE12.DoubleSide, roughness: 0.7 }), stakes.length);
+  stakes.forEach((s, i) => {
+    d.position.set(s.x, s.y, s.z);
+    d.rotation.set(0, i * 2.3, 0);
+    d.scale.setScalar(1);
+    d.updateMatrix();
+    stakeMesh.setMatrixAt(i, d.matrix);
+    flagMesh.setMatrixAt(i, d.matrix);
+  });
+  g.add(stakeMesh, flagMesh);
+  const sign = buildSign("info", "ZONA DE PERFORACIÓN", "SOLO PERSONAL AUTORIZADO", 2.8);
+  main.toWorld(40, 14, q);
+  sign.position.set(q.x, q.y, q.z);
+  sign.rotation.y = q.heading + Math.PI;
+  g.add(sign);
+  // Línea de estacas y cartel en la cresta
+  const crest = new THREE12.Group();
+  crest.name = "cresta";
+  const posts = [];
+  for (let s = 34; s <= 104; s += 4) {
+    main.toWorld(s, -30.6, q);
+    posts.push({ x: q.x, y: q.y, z: q.z, h: q.heading });
+  }
+  const crestPosts = new THREE12.InstancedMesh(new THREE12.BoxGeometry(0.16, 1.2, 0.16).translate(0, 0.6, 0), m.stripes, posts.length);
+  posts.forEach((p, i) => {
+    d.position.set(p.x, p.y, p.z);
+    d.rotation.set(0, p.h, 0);
+    d.scale.setScalar(1);
+    d.updateMatrix();
+    crestPosts.setMatrixAt(i, d.matrix);
+  });
+  crest.add(crestPosts);
+  const crestSign = buildSign("warning", "cresta", "", 2.4);
+  main.toWorld(62, -30.2, q);
+  crestSign.position.set(q.x, q.y, q.z);
+  crestSign.rotation.y = q.heading + Math.PI;
+  crest.add(crestSign);
+  g.add(crest);
+  g.userData.crest = crest;
+  return g;
+}
+// ---------------------------------------------------------------- Director visual
+var VisualDirector = class {
+  constructor(sim) {
+    this.sim = sim;
+    const scene = sim.scene;
+    this.motes = new AmbientMotes(scene);
+    this.sparks = new Sparks(scene);
+    this.tracks = new TrackMarks(scene);
+    this.mirrors = new MirrorSystem(sim.renderer);
+    this.cull = new CullManager();
+    this.smoke = new DustSystem(scene, 420);
+    this.smoke.setLook(new THREE12.Color(0.2, 0.19, 0.18), 1, scene.fog);
+    this.smoke.intensity = 1;
+    this.profile = { ...VISUAL_BASE };
+    this.grade = { tint: new THREE12.Vector3(1, 1, 1), sat: 1.06, contrast: 0.16, vig: 0.42, grain: 0, scatter: 0.3, hazeK: 1 };
+    this.dressing = {};
+    this.heat = null;
+    this.t = 0;
+    this.wind = { x: 0.6, z: 0.25 };
+    this.eye = new THREE12.Vector3();
+    this.v1 = new THREE12.Vector3();
+    this.flash0 = 0;
+  }
+  // Elementos fijos de la mina que se ocultan a la distancia
+  registerWorld(world) {
+    for (const o of world.props.group.children) {
+      const n = o.name || "";
+      let far = 700;
+      if (n === "chancadora" || n === "pala") far = 1800;
+      else if (n === "torre-iluminacion") far = 900;
+      else if (n.startsWith("rocas") || n === "delineadores" || n === "linea-electrica" || o.isInstancedMesh || o.isLineSegments || n === "" && o.children.length > 3) far = 0;
+      else if (o.userData.face) far = 420;
+      if (far > 0) this.cull.add(o, far);
+    }
+    for (const t of world.parked) this.cull.addTruck(t, 120);
+  }
+  setQuality(q) {
+    this.quality = q;
+    this.mirrors.setQuality(q);
+    this.motes.mat.uniforms.uSize.value = q === "baja" ? 0.04 : 0.026;
+  }
+  setViewport(h, fov) {
+    this.motes.setViewport(h, fov);
+    this.sparks.setViewport(h, fov);
+    this.smoke.setViewport(h, fov);
+  }
+  // Se llama al iniciar cada sesión: perfil visual, escenografía y huellas de la máquina
+  apply(def, cfg, cond) {
+    const sim = this.sim;
+    const p = this.profile = visualProfile(def, cfg, cond);
+    const g = this.grade;
+    g.tint.set(...p.tint);
+    g.sat = p.sat;
+    g.contrast = p.contrast;
+    g.vig = p.vig;
+    g.grain = p.grain;
+    g.scatter = p.scatter;
+    g.hazeK = p.hazeK;
+    sim.env.grade = g;
+    sim.dust.intensity *= p.dust;
+    const light = cond.night ? 0.25 : cfg.time === "atardecer" ? 0.75 : 1;
+    const moteCol = cfg.weather === "neblina" ? new THREE12.Color(0.9, 0.92, 0.94) : new THREE12.Color(1, 0.93, 0.8);
+    this.motes.setLook({ amount: p.motes, color: moteCol, light });
+    this.smoke.setLook(new THREE12.Color(0.2, 0.19, 0.18), cond.night ? 0.3 : 1, sim.scene.fog);
+    // Llantas del CAEX en su forma normal (el reventón aplasta una)
+    for (const w of [sim.truck.frontL, sim.truck.frontR]) {
+      if (!w) continue;
+      w.scale.set(1, 1, 1);
+      w.position.y = TRUCK_DIMS.tireR;
+    }
+    this.tracks.wet = !!cond.wet;
+    this.tracks.reset();
+    this.tracks.setWheels(sim.truck.trackWheels || []);
+    this.mirrors.attach(sim.truck);
+    this.setDressing(p.dressing, p.crest);
+    this.heat = p.heat > 0 && sim.machineId === "caex" ? this.ensureHeat(sim.truck) : null;
+    this.heatK = p.heat;
+    this.flash0 = 0;
+    FX_LIGHT.col.value.setRGB(0, 0, 0);
+    FX_LIGHT.flash.value.setRGB(0, 0, 0);
+  }
+  setDressing(kind, crest) {
+    const sim = this.sim;
+    const want = { frente: kind === "frente", malla: kind === "malla" };
+    for (const k of Object.keys(want)) {
+      let grp = this.dressing[k];
+      if (want[k] && !grp) {
+        grp = this.dressing[k] = k === "frente" ? buildMuckPile(sim) : buildDrillPattern(sim);
+        applyFxLight(grp);
+        sim.scene.add(grp);
+      }
+      if (!grp) continue;
+      grp.visible = want[k];
+      const ob = grp.userData.obstacle;
+      if (ob) {
+        const list = sim.world.obstacles, i = list.indexOf(ob);
+        if (want[k] && i < 0) list.push(ob);
+        if (!want[k] && i >= 0) list.splice(i, 1);
+      }
+      if (grp.userData.crest) grp.userData.crest.visible = !!crest || want[k];
+    }
+  }
+  // Discos incandescentes y humo en las ruedas cuando los frenos se calientan
+  ensureHeat(truck) {
+    if (truck.heatGlow) return truck.heatGlow;
+    const mat = new THREE12.MeshBasicMaterial({ color: 0, transparent: true, opacity: 1, blending: THREE12.AdditiveBlending, depthWrite: false, toneMapped: false });
+    const geo = new THREE12.RingGeometry(0.26, 0.52, 28);
+    // Cubo exterior de cada rueda: el brillo se ve desde afuera y en los espejos
+    const spots = [[3.99, 3.3, 1], [-3.99, 3.3, -1], [4.6, -3.3, 1], [-4.6, -3.3, -1]];
+    const meshes = spots.map(([x, z, s]) => {
+      const m = new THREE12.Mesh(geo, mat);
+      m.position.set(x, TRUCK_DIMS.tireR, z);
+      m.rotation.y = s * Math.PI / 2;
+      truck.root.add(m);
+      return m;
+    });
+    truck.heatGlow = { mat, meshes, spots };
+    return truck.heatGlow;
+  }
+  update(dt, T) {
+    const sim = this.sim, d = sim.dyn, cam = sim.camera;
+    this.t += dt;
+    this.motes.update(dt, cam, this.wind);
+    this.sparks.update(dt);
+    this.smoke.update(dt, this.wind);
+    sim.truck.root.updateMatrixWorld();
+    this.tracks.update(sim.truck.root, d, sim);
+    // Calor de frenos: el disco pasa de rojo oscuro a naranja y empieza a humear
+    if (this.heat) {
+      const temp = Math.max(d.tSB || 0, (d.tEB || 0) * 0.92);
+      const k = smoothstep(300, 640, temp) * Math.min(1.6, this.heatK + 0.2);
+      const c = this.heat.mat.color;
+      c.setRGB(1, 0.1 + 0.18 * k, 0.01).multiplyScalar(k * 0.8);
+      for (const m of this.heat.meshes) m.visible = k > 0.01;
+      if (temp > 420 && Math.random() < dt * (4 + 14 * k)) {
+        const [x, z] = this.heat.spots[Math.floor(Math.random() * 4)];
+        const p = this.v1.set(x, TRUCK_DIMS.tireR + 0.4, z).applyMatrix4(sim.truck.root.matrixWorld);
+        this.smoke.emit(p.x, p.y, p.z, (Math.random() - 0.5) * 0.6, 0.9 + Math.random() * 0.8, (Math.random() - 0.5) * 0.6, 1.6 + k * 2.4, 2.6 + Math.random() * 2, 0.16 + 0.22 * k);
+      }
+    }
+    // Chispas al raspar la berma con velocidad
+    if (d.pen > 0.2 && Math.abs(d.v) > 1.6 && Math.random() < dt * 22) {
+      const side = d.contactSide || 1;
+      const p = this.v1.set(side * PLAYER.halfWidth, 0.8, PLAYER.front * 0.55).applyMatrix4(sim.truck.root.matrixWorld);
+      this.sparks.emit(p.x, p.y, p.z, -Math.sin(d.heading) * d.v * 0.3, 1.2, -Math.cos(d.heading) * d.v * 0.3, 5, 2.6);
+    }
+    // Sismo: polvo que cae de los taludes cercanos
+    if ((sim.quake || 0) > 0.05 && Math.random() < dt * 10 * sim.quake) {
+      const a = Math.random() * Math.PI * 2, rr = 25 + Math.random() * 60;
+      const x = d.x + Math.cos(a) * rr, z = d.z + Math.sin(a) * rr;
+      const y = sim.world.terrain.heightAt(x, z);
+      if (y > d.y + 3) sim.dust.emit(x, y + 0.5, z, 0, -0.4, 0, 4 + Math.random() * 4, 4 + Math.random() * 3, 0.28);
+    }
+    // El destello del rayo decae
+    if (this.flash0 > 0) {
+      this.flash0 = Math.max(0, this.flash0 - dt * 5.5);
+      FX_LIGHT.flash.value.setRGB(0.55, 0.6, 0.75).multiplyScalar(this.flash0);
+    }
+    this.cull.update(cam);
+  }
+  lightning(strength) {
+    this.flash0 = Math.max(this.flash0, strength);
+  }
+  // Dentro del visor: espejos cada tres cuadros y sin partículas cercanas, para sostener la fluidez
+  setXR(on) {
+    this.xr = on;
+    this.mirrors.skip = on ? 3 : 2;
+    this.motes.points.visible = !on && this.profile.motes > 0.02;
+  }
+  // Luz del fuego: posición en el mundo e intensidad con parpadeo
+  fireLight(worldPos, level, t) {
+    if (level <= 0.01) {
+      FX_LIGHT.col.value.setRGB(0, 0, 0);
+      return;
+    }
+    const flick = 0.82 + 0.18 * Math.sin(t * 17) * Math.sin(t * 7.3 + 1);
+    FX_LIGHT.pos.value.copy(worldPos);
+    FX_LIGHT.r.value = 14 + level * 26;
+    FX_LIGHT.col.value.setRGB(1, 0.45, 0.14).multiplyScalar((0.6 + level * 2.6) * flick * (this.sim.cond?.night ? 1.6 : 0.8));
+  }
+  renderMirrors() {
+    const sim = this.sim;
+    if (sim.cameraMode !== "cabina" || sim.camScript) return;
+    sim.camera.getWorldPosition(this.eye);
+    this.mirrors.render(sim.scene, sim.camera, this.eye, sim.xr?.presenting);
+  }
+};
 var Simulator = class {
   constructor({ canvas, settings, hud, onFinished = () => {
   }, onExit = () => {
@@ -12654,6 +13745,12 @@ var Simulator = class {
     this.traffic = new Traffic(scene, this.world, profile);
     this.dust = new DustSystem(scene);
     this.rain = new RainSystem(scene);
+    // Motor visual unificado: efectos, espejos, huellas, detalle por distancia y perfiles por simulación
+    this.visual = new VisualDirector(this);
+    this.visual.registerWorld(this.world);
+    for (const t of this.traffic.trucks) this.visual.cull.addTruck(t.model, 120);
+    this.visual.setQuality(quality);
+    applyFxLight(scene);
     this.audio = this.audio || new AudioEngine();
     this.haptics = this.haptics || new HapticBridge({ url: this.settings.hapticUrl, enabled: this.settings.hapticEnabled });
     this.input = this.input || new InputManager(this.canvas, this.settings);
@@ -12716,6 +13813,7 @@ var Simulator = class {
     const dpr = window.devicePixelRatio || 1;
     this.renderer.setPixelRatio(q === "alta" ? Math.min(dpr, 1.75) : q === "media" ? Math.min(dpr, 1.25) : 0.85);
     if (this.env) this.env.setShadowQuality(q);
+    this.visual?.setQuality(q);
     const canHDR = this.renderer.extensions.has("EXT_color_buffer_float") || this.renderer.extensions.has("EXT_color_buffer_half_float");
     if (this.post && this.postQ !== q) {
       this.post.dispose();
@@ -12732,6 +13830,7 @@ var Simulator = class {
   }
   // Dibuja el cuadro con el posproceso, salvo dentro del visor (la RV requiere render directo)
   renderFrame(dt) {
+    this.visual?.renderMirrors();
     if (this.post && !this.xr?.presenting) this.post.render(this.scene, this.camera, dt, this.env);
     else this.renderer.render(this.scene, this.camera);
   }
@@ -12771,6 +13870,7 @@ var Simulator = class {
       this.post.setSize(Math.round(w * pr), Math.round(h * pr));
     }
     this.dust?.setViewport(h * this.renderer.getPixelRatio(), this.camera.fov);
+    this.visual?.setViewport(h * this.renderer.getPixelRatio(), this.camera.fov);
   }
   disposeWorld() {
     this.renderer.setAnimationLoop(null);
@@ -12797,6 +13897,7 @@ var Simulator = class {
     const cond = this.env.apply(cfg.time || "dia", cfg.weather || "despejado");
     this.cond = cond;
     AMBIENT_SKY.value.copy(this.env.ambientSky);
+    AMBIENT_GROUND.value.copy(this.env.ambientGround);
     this.world.setConditions(cond);
     this.world.terrain.bakeSun(this.env.sunDir);
     this.dust.intensity = cond.dust;
@@ -12812,6 +13913,7 @@ var Simulator = class {
       this.renderer.compile(this.scene, this.camera);
       this.renderer.setRenderTarget(null);
     }
+    this.visual?.apply(def, cfg, cond);
     this.dyn.setModel(cfg.truckModel, 1);
     this.dyn.bermHeight = this.profile.bermHeight ?? 2.8;
     const startRaw = eventMode ? def.start : null;
@@ -12867,6 +13969,7 @@ var Simulator = class {
     this.applyCameraMode();
     this.hud.begin({
       mode: cfg.mode,
+      scenarioId: def.id,
       modeLabel: MODES[cfg.mode].label,
       operator: cfg.operator,
       procedure,
@@ -12990,12 +14093,14 @@ var Simulator = class {
     this.cameraMode = "cabina";
     this.applyCameraMode();
     this.displays.setVRMode(true);
+    this.visual?.setXR(true);
     this.needRecenter = 2;
     this.hud.vrChanged(true);
   }
   onXREnd() {
     this.haptics.xrSession = null;
     this.displays.setVRMode(false);
+    this.visual?.setXR(false);
     this.rig.position.copy(PLAYER.eye);
     this.rig.rotation.set(0, Math.PI, 0);
     this.camera.position.set(0, 0, 0);
@@ -13188,6 +14293,7 @@ var Simulator = class {
     this.mainHint = mq.i;
     const mainS = mq.s, lat = mq.lat;
     this.lastMainS = mainS;
+    this.lastLat = lat;
     if (driving) sc.update(dt, { truck: this.dyn, ctl, mainS, lat });
     else if (sc.phase === "finalizado") this.dyn.events.length = 0;
     const T = performance.now() / 1e3;
@@ -13313,7 +14419,10 @@ var Simulator = class {
       alarmTemp: this.dyn.tEB > 450,
       horn: ctl.horn || this.traffic.trucks.some((t) => t.honk > 0.6),
       radioOpen: ctl.radio && driving,
-      crashed: !!this.dyn.crashed
+      crashed: !!this.dyn.crashed,
+      machine: this.machineId,
+      hydraulic: !!ctl.impl && driving,
+      drilling: !!this.truck.state?.drilling
     });
     const vib = Math.min(1, Math.abs(this.dyn.v) / 10);
     this.haptics.setContinuous({
@@ -13335,6 +14444,7 @@ var Simulator = class {
     this.env.update(dt, focus);
     this.dust.emitFromTruck(this.truck.root, this.dyn.v, dt);
     this.dust.update(dt);
+    this.visual?.update(dt, T);
     this.rain.update(dt, focus);
     if (this.needRecenter && this.xr.presenting) {
       this.needRecenter--;
@@ -13359,13 +14469,34 @@ var Simulator = class {
     r.rotation.y = d.heading;
     r.rotation.x = -d.pitch;
     r.rotation.z = d.roll + (d.rollBias || 0);
+    // Suspensión con resortes: cabeceo al frenar o acelerar, balanceo en las curvas y baches según el piso.
+    // Solo mueve la carrocería: la física del camión no cambia.
     const v = Math.abs(d.v);
-    const rough = d.inEscape ? 0.06 : d.pen > 0 ? 0.05 : 0.014;
+    const rough = d.inEscape ? 0.07 : d.pen > 0 ? 0.06 : (SURFACES[d.surface]?.rough ?? 0.15) * 0.1;
     const b = this.truck.body;
     const q = this.quake || 0;
-    b.position.y = Math.sin(T * 9.1) * rough * Math.min(1, v / 8) + Math.sin(T * 3.3 + 1) * rough * 0.6 * Math.min(1, v / 8) + Math.sin(T * 31) * 0.07 * q;
-    b.rotation.z = Math.sin(T * 5.7) * rough * 0.03 * Math.min(1, v / 8) - (d.latAcc || 0) * 4e-3 + Math.sin(T * 17) * 0.012 * q;
-    b.rotation.x = -(d.power?.retarder > 0 ? 2e-3 : 0);
+    const s = this.susp || (this.susp = { p: 0, pv: 0, r: 0, rv: 0, h: 0, hv: 0, prevV: 0, acc: 0, lastT: T });
+    const dtS = Math.min(0.05, Math.max(1e-3, T - s.lastT || 1 / 60));
+    s.lastT = T;
+    const accRaw = (d.v - s.prevV) / dtS;
+    s.prevV = d.v;
+    s.acc += (Math.max(-6, Math.min(6, accRaw)) - s.acc) * Math.min(1, dtS * 6);
+    const k = this.truck.suspK ?? 1;
+    const odo = d.odometer || 0;
+    const bump = (valueNoise(odo * 0.55, 3.1, 11) - 0.5 + (valueNoise(odo * 1.9, 7.7, 12) - 0.5) * 0.45) * rough * Math.min(1, v / 4);
+    const tp = Math.max(-0.03, Math.min(0.03, -s.acc * 42e-4 * k)) + bump * 0.05;
+    const tr = Math.max(-0.035, Math.min(0.035, (d.latAcc || 0) * 45e-4 * k)) + bump * 0.04;
+    const th = bump * 0.9 * k;
+    const w2 = 49, damp = 5.9;
+    s.pv += ((tp - s.p) * w2 - s.pv * damp) * dtS;
+    s.p += s.pv * dtS;
+    s.rv += ((tr - s.r) * w2 - s.rv * damp) * dtS;
+    s.r += s.rv * dtS;
+    s.hv += ((th - s.h) * 160 - s.hv * 18) * dtS;
+    s.h += s.hv * dtS;
+    b.position.y = s.h + Math.sin(T * 31) * 0.07 * q;
+    b.rotation.x = s.p;
+    b.rotation.z = s.r + Math.sin(T * 17) * 0.012 * q;
   }
   updateCamera(dt, T) {
     this.shake = Math.max(0, this.shake - dt * 1.6);
@@ -13384,6 +14515,10 @@ var Simulator = class {
       cam.rotation.set(look.pitch + Math.sin(T * 31) * 0.01 * sh, look.yaw + Math.sin(T * 27) * 0.012 * sh, 0);
       const v = Math.abs(d.v);
       cam.position.set(Math.sin(T * 23) * 0.04 * sh, Math.sin(T * 11.3) * 6e-3 * Math.min(1, v / 10) + Math.sin(T * 41) * 0.05 * q, 0);
+      return;
+    }
+    if (this.cameraMode === "cine") {
+      cineCamera(this, dt, cam);
       return;
     }
     const fx = Math.sin(d.heading), fz = Math.cos(d.heading);
@@ -13479,7 +14614,7 @@ var Hud = class {
       </div>
       <div class="proc" data-k="proc" ${showProc ? "" : "hidden"}>
         <h4>${esc2(info.procedureTitle || "Procedimiento ante falla de frenos")}</h4>
-        ${info.procedure.map((p, i) => `<div class="proc-item" data-step="${p.id}"><b>${i + 1}</b><span>${esc2(p.label)}</span><span class="t"></span></div>`).join("")}
+        ${info.procedure.map((p, i) => `<div class="proc-item" data-step="${p.id}"><b>${i + 1}</b><span>${esc2(p.label)}</span>${stepKeyHtml(stepKey(info.scenarioId, p))}<span class="t"></span></div>`).join("")}
       </div>
       <div class="alarm" data-k="alarm" hidden>${icon("alert")}<div><span data-k="alarmTitle">FALLA DEL FRENO DE SERVICIO</span><small data-k="alarmSub">Presión de frenos: 0 bar · Aplique el procedimiento de emergencia</small></div></div>
       <div class="eb-banner" data-k="ebbanner" hidden><i></i><span data-k="ebtext">Freno de emergencia aplicado</span><kbd>B</kbd> suelta</div>
