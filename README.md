@@ -70,7 +70,12 @@ Cada simulación tiene el botón **Conectar visor 3D** en la barra superior y en
 
 - **Visor conectado a la PC** (Meta Quest con Link o Air Link, o un visor de SteamVR): encienda el visor, deje abierta su aplicación en la PC y abra la demo en Chrome o Edge.
 - **Meta Quest sin PC**: abra la demo en el navegador del visor.
-- Dentro del visor, el gatillo derecho comienza la sesión y suelta el freno de parqueo, como `W` en el teclado (también comienza con `A`; el instructor puede pulsar **Comenzar**). Durante la sesión: gatillo derecho acelera, gatillo izquierdo frena, agarre derecho aplica el retardador, `A` el freno de emergencia, `B` (mantener) la radio, el stick izquierdo gira (en controles HTC Vive, el panel táctil), `X` el freno de parqueo e `Y` las luces de emergencia.
+- Al entrar, el visor muestra frente al operador un panel con los controles. Se comienza mirando al frente y apretando el gatillo derecho: la sesión empieza, la vista se centra y se suelta el freno de parqueo, como `W` en el teclado (también comienza con `A`; el instructor puede pulsar **Comenzar**).
+- Durante la sesión: gatillo derecho acelera, gatillo izquierdo frena, agarre derecho aplica el retardador, `A` el freno de emergencia, `B` (mantener) la radio, el stick izquierdo gira, `X` el freno de parqueo, `Y` las luces de emergencia, agarre izquierdo la bocina y pulsar el stick izquierdo recentra la vista.
+- Stick derecho: en el cargador y la perforadora sube o baja el balde o el mástil (y pulsado, perfora o se detiene); en los incendios, ← apaga el motor, → activa el sistema contra incendio y ↓ evacúa; en el resto, ← y → cambian a marcha atrás o adelante.
+- En el entrenamiento, a la izquierda del parabrisas aparece el procedimiento con el botón de cada paso, y el tutor nombra los botones del control en vez de las teclas.
+- Con controles HTC Vive o Windows Mixed Reality, sin `A`/`B`/`X`/`Y`, el panel táctil presionado hace sus veces: abajo `A` o `X`, arriba `B` o `Y`. Con HTC Vive, que no tiene stick, las acciones del stick derecho quedan en el teclado.
+- En un visor autónomo (Meta Quest o Pico sin PC) se baja la calidad gráfica dentro del visor para mantener la fluidez.
 - Al terminar, el resultado (aprobado o no, puntaje, primera acción, pasos en orden) aparece frente al operador dentro del visor. Con `A` sale del visor y en la pantalla queda el informe del tutor.
 - Si el visor no aparece, el botón explica cómo conectarlo y vuelve a buscarlo.
 

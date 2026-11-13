@@ -5290,13 +5290,21 @@ var InputManager = class {
         horn = horn || !!gp.buttons[1]?.pressed;
       }
     }
+    let xrImpl = 0, xrDrill = false;
     if (xrSession && this.source !== "volante") {
       for (const src of xrSession.inputSources || []) {
         const gp = src.gamepad;
         if (!gp) continue;
         const hand = src.handedness;
         const b = (i) => gp.buttons[i];
+        // Meta Quest, Pico y Valve Index tienen A/B/X/Y; en HTC Vive y Windows MR hace sus veces el panel táctil presionado (abajo: A/X, arriba: B/Y)
+        const face = gp.buttons.length >= 5;
+        const pad = !face && !!b(2)?.pressed, padUp = (gp.axes[1] || 0) < -0.2;
+        const low = face ? !!b(4)?.pressed : pad && !padUp;
+        const up = face ? !!b(5)?.pressed : pad && padUp;
+        const stick = gp.axes.length > 2;
         if (hand === "right") {
+          this.xrFamily = face ? "botones" : "panel";
           const thr = b(0)?.value || 0, sq = b(1)?.value || 0;
           if (thr > 0.02 || sq > 0.02) this.source = "rv";
           if (this.source === "rv") {
@@ -5305,7 +5313,7 @@ var InputManager = class {
           }
           // Gatillo derecho a fondo, como W: comienza la sesión y suelta el freno de parqueo
           if (this.btn("xr-rt", 0, thr > 0.6)) {
-            if (this.xrStartArmed) ui.start = true;
+            if (this.xrStartArmed) ui.start = ui.startXR = true;
             ui.drive = true;
             if (st.parking && !this.noAutoPark) {
               st.parking = false;
@@ -5313,12 +5321,27 @@ var InputManager = class {
             }
           }
           // A: antes de comenzar inicia la sesión; al terminar sale del visor; durante la sesión, freno de emergencia
-          if (this.btn("xr-r", 4, !!b(4)?.pressed)) {
-            if (this.xrStartArmed) ui.start = true;
+          if (this.btn("xr-r", 4, low)) {
+            if (this.xrStartArmed) ui.start = ui.startXR = true;
             else if (this.xrExitArmed) ui.exitVR = true;
             else st.ebrake = !st.ebrake;
           }
-          radio = radio || !!b(5)?.pressed;
+          radio = radio || up;
+          // Stick derecho: balde o mástil, perforación y marcha; en los incendios, motor, sistema contra incendio y evacuación
+          if (stick) {
+            const sx = gp.axes[2] || 0, sy = gp.axes[3] || 0, mode = this.xrStickMode || "marcha";
+            if (mode === "implemento" && Math.abs(sy) > 0.35) xrImpl = sy < 0 ? 1 : -1;
+            if (this.btn("xr-rs", 3, !!b(3)?.pressed)) xrDrill = true;
+            const toL = this.btn("xr-rx", 0, sx < -0.7), toR = this.btn("xr-rx", 1, sx > 0.7), toD = this.btn("xr-ry", 0, sy > 0.7);
+            if (mode === "fuego") {
+              if (toL) ui.engine = true;
+              if (toR) ui.suppress = true;
+              if (toD) ui.evacuate = true;
+            } else {
+              if (toL) st.gear = "R";
+              if (toR) st.gear = "D";
+            }
+          }
         } else if (hand === "left") {
           const brk = b(0)?.value || 0;
           // Stick (Meta Quest, Index, WMR) o, si el control no tiene, el panel táctil (HTC Vive)
@@ -5328,10 +5351,10 @@ var InputManager = class {
             brake = Math.max(brake, brk);
             steer = Math.abs(s) > Math.abs(steer) ? s : steer;
           }
-          if (this.btn("xr-l", 4, !!b(4)?.pressed)) st.parking = !st.parking;
-          if (this.btn("xr-l", 5, !!b(5)?.pressed)) st.hazard = !st.hazard;
+          if (this.btn("xr-l", 4, low)) st.parking = !st.parking;
+          if (this.btn("xr-l", 5, up)) st.hazard = !st.hazard;
           horn = horn || !!b(1)?.pressed;
-          if (this.btn("xr-l", 3, !!b(3)?.pressed)) ui.recenter = true;
+          if (this.btn("xr-l", 3, stick && !!b(3)?.pressed)) ui.recenter = true;
         }
       }
     }
@@ -5344,8 +5367,8 @@ var InputManager = class {
     st.horn = horn;
     st.lever = this.lever;
     // Implemento de la máquina: balde del cargador o mástil de la perforadora
-    st.impl = (k.has("KeyU") ? 1 : 0) - (k.has("KeyJ") ? 1 : 0);
-    st.drillToggle = this.pressed("KeyK");
+    st.impl = (k.has("KeyU") ? 1 : 0) - (k.has("KeyJ") ? 1 : 0) || xrImpl;
+    st.drillToggle = this.pressed("KeyK") || xrDrill;
     this.edges.clear();
     return { ctl: st, ui };
   }
@@ -8210,7 +8233,7 @@ var Tutor = class {
     if (this.rules?.briefing) return this.rules.briefing(this, mode, ctx);
     const op = ctx.operatorCode ? `operador ${spellCode(ctx.operatorCode)}` : "operador";
     const vr = ctx.vr ? " Mira alrededor de la cabina: a tu derecha está la pantalla del equipo." : "";
-    const go = !ctx.keyboard ? "Suelta el freno de parqueo cuando estés listo." : ctx.parking ? "Acelera con la tecla W cuando estés listo: eso suelta el freno de parqueo." : "Freno de parqueo liberado: acelera con W.";
+    const go = ctx.vr ? ctx.parking ? "Aprieta el gatillo derecho cuando estés listo: eso suelta el freno de parqueo." : "Freno de parqueo liberado: acelera con el gatillo derecho." : !ctx.keyboard ? "Suelta el freno de parqueo cuando estés listo." : ctx.parking ? "Acelera con la tecla W cuando estés listo: eso suelta el freno de parqueo." : "Freno de parqueo liberado: acelera con W.";
     if (mode === "familiarizacion") {
       this.say(`Hola, ${op}. Soy tu tutor de SimuMina. En esta sesión de familiarización bajaremos la ${ctx.rampName} con el camión cargado para que conozcas los mandos.${vr} ${ctx.keyboard ? go : "Primero, suelta el freno de parqueo."}`, { id: "brief" });
     } else if (mode === "entrenamiento") {
@@ -8756,15 +8779,21 @@ var XRManager = class {
   }
   async enter() {
     if (this.session) return this.session;
+    // Visor autónomo (Meta Quest o Pico sin PC): menos resolución, más foveación y sin forzar 90 Hz, para sostener la fluidez
+    this.standalone = /OculusBrowser|Quest|Pico|Wolvic/i.test(navigator.userAgent);
+    try {
+      this.renderer.xr.setFramebufferScaleFactor(this.standalone ? 0.8 : 1);
+    } catch {
+    }
     const session = await navigator.xr.requestSession("immersive-vr", { optionalFeatures: ["local-floor", "bounded-floor", "hand-tracking"] });
     this.renderer.xr.setReferenceSpaceType("local");
     await this.renderer.xr.setSession(session);
     try {
-      this.renderer.xr.setFoveation(0.6);
+      this.renderer.xr.setFoveation(this.standalone ? 1 : 0.6);
     } catch {
     }
     try {
-      if (session.supportedFrameRates?.includes?.(90)) session.updateTargetFrameRate(90);
+      if (!this.standalone && session.supportedFrameRates?.includes?.(90)) session.updateTargetFrameRate(90);
     } catch {
     }
     this.session = session;
@@ -8848,6 +8877,16 @@ var CabDisplays = class {
     this.tutorTime = 0;
     this.mapBounds = this.computeBounds();
     this.drawTutor();
+    // Guía del visor: antes de comenzar, los controles frente al operador; en el entrenamiento, los pasos con su botón, a la izquierda
+    this.family = "botones";
+    this.guide = makeCanvasTexture(768, 720);
+    this.guideMesh = new THREE11.Mesh(new THREE11.PlaneGeometry(0.52, 0.4875), new THREE11.MeshBasicMaterial({ map: this.guide.t, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, fog: false }));
+    this.guideMesh.renderOrder = 999;
+    this.guideMesh.visible = false;
+    interior.screens.tutor.parent.add(this.guideMesh);
+    this.guideCfg = null;
+    this.guideDone = /* @__PURE__ */ new Set();
+    this.guidePhaseName = "off";
   }
   computeBounds() {
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -8869,6 +8908,28 @@ var CabDisplays = class {
   setVRMode(on) {
     this.vrMode = on;
     this.drawTutor();
+    this.drawGuide();
+  }
+  setGuide(cfg) {
+    this.guideCfg = cfg;
+    this.guideDone = /* @__PURE__ */ new Set();
+    this.guidePhaseName = "listo";
+    this.drawGuide();
+  }
+  guideStep(id) {
+    this.guideDone.add(id);
+    this.drawGuide();
+  }
+  guidePhase(phase) {
+    this.guidePhaseName = phase;
+    this.drawGuide();
+  }
+  // Tipo de control detectado: con botones A/B/X/Y o con panel táctil
+  setFamily(family) {
+    if (family === this.family) return;
+    this.family = family;
+    this.drawTutor();
+    this.drawGuide();
   }
   update(dt, s) {
     this.timer += dt;
@@ -9079,8 +9140,98 @@ var CabDisplays = class {
     ctx.fillText(msg.radio ? "RADIO · DESPACHO" : "TUTOR IA", 40, 30);
     ctx.fillStyle = "#ffffff";
     ctx.font = `600 ${msg.text.length > 150 ? 32 : 38}px ${FONT}`;
-    const lines = wrap2(ctx, msg.text.replace(/\s*\(tecla [^)]+\)/gi, ""), W - 80).slice(0, 4);
+    const lines = wrap2(ctx, vrText(msg.text, this.family), W - 80).slice(0, 4);
     lines.forEach((ln, i) => ctx.fillText(ln, 40, 76 + i * (msg.text.length > 150 ? 40 : 48)));
+    t.needsUpdate = true;
+  }
+  // Frente al operador (antes de comenzar) o a la izquierda del parabrisas (durante la sesión), siempre mirando a los ojos
+  placeGuide(center) {
+    const e = TRUCK_DIMS.eye, p = this.guideMesh.position;
+    if (center) p.set(e.x, e.y - 0.04, e.z + 1);
+    else p.set(e.x + 0.6, e.y - 0.06, e.z + 0.95);
+    this.guideMesh.quaternion.setFromRotationMatrix(new THREE11.Matrix4().lookAt(e, p, new THREE11.Vector3(0, 1, 0)));
+  }
+  drawGuide() {
+    if (!this.guideMesh) return;
+    const cfg = this.guideCfg, ph = this.guidePhaseName;
+    const legend = ph === "listo", steps = ph === "run" && cfg?.mode === "entrenamiento";
+    const show = !!this.vrMode && !!cfg && (legend || steps);
+    this.guideMesh.visible = show;
+    if (!show) return;
+    this.placeGuide(legend);
+    const { ctx, c, t } = this.guide;
+    const W = c.width, H = c.height, x0 = 32;
+    const rows = legend ? vrControlRows(cfg, this.family).map(([chip, text]) => ({ chip, text })) : cfg.procedure.map((p, i) => ({ n: i + 1, text: p.label, chip: stepVR(cfg.scenarioId, p, this.family), done: this.guideDone.has(p.id) }));
+    const rowH = legend ? 42 : 64, top = 92;
+    const bottom = Math.min(H - 8, top + rows.length * rowH + (legend ? 78 : 22));
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(8,12,16,0.88)";
+    roundRect(ctx, 8, 8, W - 16, bottom - 8, 26);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(245,179,1,0.75)";
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    const title = (legend ? "Controles del visor" : cfg.title || "Procedimiento").toUpperCase();
+    let fs = 30;
+    do {
+      ctx.font = `700 ${fs}px ${FONT}`;
+      fs -= 2;
+    } while (ctx.measureText(title).width > W - 2 * x0 && fs > 18);
+    ctx.fillStyle = "#ffd04a";
+    ctx.fillText(title, x0, 52);
+    const chipOf = (label) => {
+      ctx.font = `700 24px ${FONT}`;
+      return Math.max(64, ctx.measureText(label).width + 28);
+    };
+    const drawChip = (label, x, y, w) => {
+      ctx.fillStyle = "rgba(245,179,1,0.16)";
+      roundRect(ctx, x, y - 17, w, 34, 10);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(245,179,1,0.7)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = "#ffd04a";
+      ctx.font = `700 24px ${FONT}`;
+      ctx.fillText(label, x + 14, y + 1);
+    };
+    rows.forEach((r, i) => {
+      const y = top + i * rowH + rowH / 2;
+      if (legend) {
+        const w = chipOf(r.chip);
+        drawChip(r.chip, x0, y, w);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = `600 26px ${FONT}`;
+        ctx.fillText(r.text, x0 + w + 18, y + 1);
+        return;
+      }
+      ctx.fillStyle = r.done ? "#3ad07f" : "rgba(255,255,255,0.14)";
+      ctx.beginPath();
+      ctx.arc(x0 + 20, y, 19, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = r.done ? "#04140c" : "#e6edf3";
+      ctx.font = `700 22px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.fillText(r.done ? "✓" : String(r.n), x0 + 20, y + 1);
+      ctx.textAlign = "left";
+      const w = r.chip && !r.done ? chipOf(r.chip) : 0;
+      if (w) drawChip(r.chip, W - x0 - w, y, w);
+      ctx.fillStyle = r.done ? "#8a97a3" : "#ffffff";
+      ctx.font = `600 26px ${FONT}`;
+      const lines = wrap2(ctx, r.text, W - x0 - 56 - w - 24).slice(0, 2);
+      lines.forEach((ln, j) => ctx.fillText(ln, x0 + 56, y + (j - (lines.length - 1) / 2) * 28 + 1));
+    });
+    if (legend) {
+      ctx.fillStyle = "rgba(245,179,1,0.92)";
+      roundRect(ctx, x0, bottom - 70, W - 2 * x0, 48, 12);
+      ctx.fill();
+      ctx.fillStyle = "#14100a";
+      ctx.font = `700 26px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.fillText("Mira al frente y aprieta el gatillo derecho", W / 2, bottom - 45);
+      ctx.textAlign = "left";
+    }
     t.needsUpdate = true;
   }
 };
@@ -10338,6 +10489,55 @@ function stepKeyHtml(spec) {
   const seq = keys.includes("+");
   const caps = keys.split(seq ? "+" : "/").map((k) => `<kbd>${k}</kbd>`).join(seq ? "+" : " ");
   return `<span class="pk" title="Tecla para cumplir este paso">${caps}${note ? `<small>${note}</small>` : ""}</span>`;
+}
+// Nombres de los botones del control: con A/B/X/Y (Meta Quest, Pico, Valve Index) o con panel táctil (HTC Vive, Windows MR)
+function vrNames(family, long = false) {
+  const pad = family === "panel";
+  if (long) return pad ? { rt: "gatillo derecho", lt: "gatillo izquierdo", rg: "agarre derecho", lg: "agarre izquierdo", a: "panel derecho abajo", b: "panel derecho arriba", x: "panel izquierdo abajo", y: "panel izquierdo arriba", ls: "panel izquierdo" } : { rt: "gatillo derecho", lt: "gatillo izquierdo", rg: "agarre derecho", lg: "agarre izquierdo", a: "botón A", b: "botón B", x: "botón X", y: "botón Y", ls: "stick izquierdo" };
+  return pad ? { rt: "Gatillo der.", lt: "Gatillo izq.", rg: "Agarre der.", lg: "Agarre izq.", a: "Panel der. abajo", b: "Panel der. arriba", x: "Panel izq. abajo", y: "Panel izq. arriba", ls: "Panel izq." } : { rt: "Gatillo der.", lt: "Gatillo izq.", rg: "Agarre der.", lg: "Agarre izq.", a: "A", b: "B", x: "X", y: "Y", ls: "Stick izq." };
+}
+// Control del visor que cumple cada paso (lo que es la tecla en el teclado); "s:" es el stick derecho
+var STEP_VR = { retarder: "rg", reduce: "rg", service: "lt", brake: "lt", slow: "lt", stop: "lt", ebrake: "a", hazard: "y", parking: "x", radio: "b+", horn: "lg", resume: "lg", escape: "ls", correct: "ls", hold: "ls", engine: "s:←", suppress: "s:→", evacuate: "s:↓", bucket: "s:↓+", lower: "s:↓+", mast: "s:↓+", drill: "s:pulsar", away: "s:←+rt", wait: null, stay: null };
+var STEP_VR_BY_SCENARIO = {
+  "frenos-sobrecalentamiento": { slow: "rg" },
+  "cargador-frenos": { stop: "s:↓+" },
+  "cargador-balde-alto": { reduce: "lt" }
+};
+function stepVR(scenarioId, step, family) {
+  const own = STEP_VR_BY_SCENARIO[scenarioId];
+  const code = own && step.id in own ? own[step.id] : STEP_VR[step.id] ?? null;
+  if (!code) return null;
+  const n = vrNames(family);
+  if (code.startsWith("s:")) {
+    // Sin stick (HTC Vive), esa acción queda en el teclado
+    if (family === "panel") return `Tecla ${(stepKey(scenarioId, step) || "").split(":")[0]}`;
+    const d = code.slice(2);
+    if (d === "pulsar") return "Stick der. (pulsar)";
+    if (d === "←+rt") return "Stick der. ← y gatillo der.";
+    return d.endsWith("+") ? `Stick der. ${d.slice(0, -1)} (mantén)` : `Stick der. ${d}`;
+  }
+  return code === "b+" ? `${n.b} (mantén)` : n[code];
+}
+// Controles que muestra la guía del visor antes de comenzar
+function vrControlRows(cfg, family) {
+  const n = vrNames(family);
+  const rows = [[n.rt, "Comenzar y acelerar"], [n.lt, "Frenar"], [n.rg, "Retardador"], [n.a, "Freno de emergencia"], [`${n.b} (mantén)`, "Radio"], [n.ls, "Dirección"], [n.x, "Freno de parqueo"], [n.y, "Luces de emergencia"], [n.lg, "Bocina"]];
+  if (family === "panel") return rows;
+  if (cfg.stickMode === "fuego") rows.push(["Stick der. ←", "Apagar el motor"], ["Stick der. →", "Sistema contra incendio"], ["Stick der. ↓", "Evacuar"]);
+  else {
+    if (cfg.stickMode === "implemento") rows.push(["Stick der. ↑ ↓", cfg.machineId === "perforadora" ? "Subir o bajar el mástil" : "Subir o bajar el balde"]);
+    rows.push(["Stick der. ← →", "Marcha atrás o adelante"]);
+  }
+  if (cfg.machineId === "perforadora") rows.push(["Stick der. (pulsar)", "Perforar o detener"]);
+  rows.push(["Stick izq. (pulsar)", "Recentrar la vista"]);
+  return rows;
+}
+// Dentro del visor, el tutor nombra los botones del control en vez de las teclas
+function vrText(text, family) {
+  const n = vrNames(family, true), pad = family === "panel";
+  const name = { S: n.lt, W: n.rt, B: n.a, P: n.x, X: n.y, R: n.b, H: n.lg, Espacio: n.rg };
+  if (!pad) Object.assign(name, { J: "stick derecho hacia abajo", U: "stick derecho hacia arriba", K: "stick derecho pulsado", M: "stick derecho a la izquierda", F: "stick derecho a la derecha", V: "stick derecho hacia abajo", 3: "stick derecho a la izquierda" });
+  return text.replace(/\(tecla 3 y W\)/gi, pad ? "(tecla 3 y gatillo derecho)" : "(stick derecho a la izquierda y gatillo derecho)").replace(/\(Espacio\)/g, `(${n.rg})`).replace(/\(mantén la tecla (\w+)\)/g, (m, k) => name[k] ? `(mantén el ${name[k]})` : m).replace(/\(tecla (\w+)\)/g, (m, k) => name[k] ? `(${name[k]})` : m).replace(/la tecla W\b/g, `el ${n.rt}`);
 }
 var CaexEventScenario = class extends Scenario {
   constructor(opts) {
@@ -12871,7 +13071,7 @@ function evTutorRules(def) {
   return {
     briefing(T, mode, ctx) {
       const op = ctx.operatorCode ? `operador ${spellCode(ctx.operatorCode)}` : "operador";
-      const go = def.noGo ? "" : !ctx.keyboard ? "Suelta el freno de parqueo cuando estés listo." : ctx.parking ? "Acelera con la tecla W cuando estés listo: eso suelta el freno de parqueo." : "Freno de parqueo liberado: acelera con W.";
+      const go = def.noGo ? "" : ctx.vr ? ctx.parking ? "Aprieta el gatillo derecho cuando estés listo: eso suelta el freno de parqueo." : "Freno de parqueo liberado: acelera con el gatillo derecho." : !ctx.keyboard ? "Suelta el freno de parqueo cuando estés listo." : ctx.parking ? "Acelera con la tecla W cuando estés listo: eso suelta el freno de parqueo." : "Freno de parqueo liberado: acelera con W.";
       if (mode === "entrenamiento") T.say(`Sesión de entrenamiento guiado, ${op}. ${def.brief} Te acompañaré durante la emergencia. ${go}`, { id: "brief" });
       else T.say(`Sesión de evaluación, ${op}. ${def.briefEval || `Conduce como en un turno normal: límite de ${ctx.speedLimit} kilómetros por hora en rampa y mantén tu carril.`} Durante la evaluación no te daré indicaciones. ${go}`, { id: "brief" });
     },
@@ -14015,6 +14215,8 @@ var Simulator = class {
     this.traffic.setEnabled(cfg.traffic !== false && !(eventMode && def.traffic === false));
     this.traffic.reset();
     this.input.noAutoPark = !!(eventMode && def.noAutoPark);
+    // Stick derecho del visor: en los incendios, motor, sistema contra incendio y evacuación; en el cargador y la perforadora, el implemento
+    this.input.xrStickMode = def.tone === "incendio" ? "fuego" : this.machineId !== "caex" ? "implemento" : "marcha";
     this.input.reset();
     this.input.attach();
     this.tutor.reset();
@@ -14042,6 +14244,7 @@ var Simulator = class {
     this.xrResult?.hide();
     this.startedAt = /* @__PURE__ */ new Date();
     const procedure = eventMode ? def.procedure : this.settings.procedure;
+    this.displays.setGuide({ procedure, mode: cfg.mode, scenarioId: def.id, machineId: this.machineId, stickMode: this.input.xrStickMode, title: def.procedureTitle || "Procedimiento ante falla de frenos" });
     const sessionOpts = {
       mode: cfg.mode,
       config: {
@@ -14091,6 +14294,7 @@ var Simulator = class {
   begin() {
     if (!this.scenario || this.scenario.phase !== "listo") return;
     if (this.displays.tutorMsg?.sticky) this.displays.setTutorMessage(null);
+    this.displays.guidePhase("run");
     this.audio.init();
     this.scenario.start();
     this.tutor.briefing(this.cfg.mode, {
@@ -14193,8 +14397,11 @@ var Simulator = class {
     this.visual?.setXR(true);
     this.needRecenter = 2;
     this.hud.vrChanged(true);
-    // Sin PC a mano (Meta Quest), el operador comienza con A; el instructor también puede pulsar Comenzar
-    if (this.scenario?.phase === "listo") this.displays.setTutorMessage({ text: "Listo para comenzar: aprieta el gatillo derecho para avanzar (o pulsa A). El gatillo izquierdo frena y el agarre derecho aplica el retardador.", sticky: true });
+    // Antes de comenzar, la guía muestra los controles frente al operador; el gatillo derecho (o A) comienza, o el instructor pulsa Comenzar
+    if (this.xr.standalone) {
+      this.env?.setShadowQuality("baja");
+      this.visual?.setQuality("baja");
+    }
     if (this.finished && this.lastSummary) this.showXRResult(500);
   }
   // Muestra el resultado dentro del visor, después de que la cabeza tenga posición
@@ -14218,6 +14425,7 @@ var Simulator = class {
     this.camera.position.set(0, 0, 0);
     this.camera.quaternion.identity();
     this.hud.vrChanged(false);
+    if (this.xr.standalone) this.applyQuality();
     this.resize();
   }
   recenter() {
@@ -14243,6 +14451,7 @@ var Simulator = class {
         break;
       case "action":
         this.hud.action(data.id, data.t, data.inOrder);
+        this.displays.guideStep(data.id);
         this.haptics.pulse("radio", 0.3, 0.15);
         break;
       case "radio_open":
@@ -14299,6 +14508,7 @@ var Simulator = class {
         this.tutor.onEvent(sc.mode, "finish", data, { reaction: res.reaction });
         this.record = this.buildRecord();
         this.lastSummary = this.hud.finished(data, res, this.record);
+        this.displays.guidePhase("fin");
         if (this.xr.presenting) this.showXRResult(data.safe ? 1800 : 1200);
         break;
       }
@@ -14379,6 +14589,9 @@ var Simulator = class {
     if (ui.trigger) this.triggerFailure();
     if (ui.recenter) this.recenter();
     if (ui.exitVR && this.xr.presenting) this.xr.exit();
+    if (this.input.xrFamily && this.input.xrFamily !== this.displays.family) this.displays.setFamily(this.input.xrFamily);
+    // Al comenzar desde el visor el operador mira la guía, al frente: la vista se centra ahí
+    if (ui.startXR && this.scenario.phase === "listo") this.needRecenter = 1;
     if ((ui.start || ui.drive && !this.xr.presenting) && this.scenario.phase === "listo") this.begin();
     if (ui.parkingAuto && !this.finished) this.hud.toast("Freno de parqueo liberado al acelerar. La tecla P lo aplica o lo suelta.");
     if (this.paused) dt = 0;
@@ -17621,7 +17834,7 @@ var app = {
           <li><b>Meta Quest sin PC</b>: en el navegador del visor abra <span class="mono">${esc(url)}</span> y entre a esta simulación.</li>
           <li>Pulse <b>Buscar visor</b>: si lo encuentra, la simulación se abre en el visor.</li>
         </ol>
-        <p class="small muted mt12">Dentro del visor: el gatillo derecho comienza la sesión y acelera (también comienza con <b>A</b>) · gatillo izquierdo frena · <b>A</b>, freno de emergencia · agarre derecho, retardador · <b>B</b> mantenido, radio · stick izquierdo, dirección · <b>X</b>, parqueo · <b>Y</b>, luces de emergencia. Al terminar, el resultado aparece frente al operador.</p>`,
+        <p class="small muted mt12">Dentro del visor: el gatillo derecho comienza la sesión y acelera (también comienza con <b>A</b>) · gatillo izquierdo frena · <b>A</b>, freno de emergencia · agarre derecho, retardador · <b>B</b> mantenido, radio · stick izquierdo, dirección · <b>X</b>, parqueo · <b>Y</b>, luces de emergencia. Al entrar, el visor muestra estos controles frente al operador y, en el entrenamiento, cada paso con su botón al lado. Con controles HTC Vive, el panel táctil presionado hace de A/B (derecho) y X/Y (izquierdo). Al terminar, el resultado aparece frente al operador.</p>`,
       actions: [{ label: "Cerrar", value: false }, { label: "Buscar visor", kind: "primary", value: true }]
     });
     if (!ok) return;
