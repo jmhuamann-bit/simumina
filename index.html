@@ -5303,11 +5303,26 @@ var InputManager = class {
             throttle = Math.max(throttle, thr);
             ret = Math.max(ret, sq);
           }
-          if (this.btn("xr-r", 4, !!b(4)?.pressed)) st.ebrake = !st.ebrake;
+          // Gatillo derecho a fondo, como W: comienza la sesión y suelta el freno de parqueo
+          if (this.btn("xr-rt", 0, thr > 0.6)) {
+            if (this.xrStartArmed) ui.start = true;
+            ui.drive = true;
+            if (st.parking && !this.noAutoPark) {
+              st.parking = false;
+              ui.parkingAuto = true;
+            }
+          }
+          // A: antes de comenzar inicia la sesión; al terminar sale del visor; durante la sesión, freno de emergencia
+          if (this.btn("xr-r", 4, !!b(4)?.pressed)) {
+            if (this.xrStartArmed) ui.start = true;
+            else if (this.xrExitArmed) ui.exitVR = true;
+            else st.ebrake = !st.ebrake;
+          }
           radio = radio || !!b(5)?.pressed;
         } else if (hand === "left") {
           const brk = b(0)?.value || 0;
-          const s = -dz(gp.axes[2] || 0);
+          // Stick (Meta Quest, Index, WMR) o, si el control no tiene, el panel táctil (HTC Vive)
+          const s = -dz((gp.axes.length > 2 ? gp.axes[2] : gp.axes[0]) || 0);
           if (brk > 0.02 || Math.abs(s) > 0.02) this.source = "rv";
           if (this.source === "rv") {
             brake = Math.max(brake, brk);
@@ -8718,7 +8733,6 @@ var AudioEngine = class {
 // js/sim/xr.js
 import * as THREE10 from "three";
 async function checkXR() {
-  if (WEB_DEMO) return { state: "demo-web", label: "Visor RV en la estación" };
   if (!window.isSecureContext) return { state: "inseguro", label: "Requiere https o localhost" };
   if (!navigator.xr) return { state: "sin-webxr", label: "Navegador sin WebXR" };
   try {
@@ -8860,7 +8874,7 @@ var CabDisplays = class {
     this.timer += dt;
     this.blink += dt;
     this.tutorTime += dt;
-    if (this.tutorMsg && this.tutorTime > 14 && !this.tutorFaded) {
+    if (this.tutorMsg && !this.tutorMsg.sticky && this.tutorTime > 14 && !this.tutorFaded) {
       this.tutorFaded = true;
       this.drawTutor();
     }
@@ -9067,6 +9081,84 @@ var CabDisplays = class {
     ctx.font = `600 ${msg.text.length > 150 ? 32 : 38}px ${FONT}`;
     const lines = wrap2(ctx, msg.text.replace(/\s*\(tecla [^)]+\)/gi, ""), W - 80).slice(0, 4);
     lines.forEach((ln, i) => ctx.fillText(ln, 40, 76 + i * (msg.text.length > 150 ? 40 : 48)));
+    t.needsUpdate = true;
+  }
+};
+// Resultado de la sesión frente al operador cuando termina dentro del visor (desde ahí no se ve la pantalla del PC)
+var XRResultPanel = class {
+  constructor(scene) {
+    this.tex = makeCanvasTexture(1024, 600);
+    const mat = new THREE11.MeshBasicMaterial({ map: this.tex.t, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, fog: false });
+    this.mesh = new THREE11.Mesh(new THREE11.PlaneGeometry(0.96, 0.5625), mat);
+    this.mesh.renderOrder = 1e3;
+    this.mesh.frustumCulled = false;
+    this.mesh.visible = false;
+    scene.add(this.mesh);
+    this.eye = new THREE11.Vector3();
+    this.dir = new THREE11.Vector3();
+  }
+  // Aparece a 1,1 m delante de la mirada, a la altura de los ojos, y queda fijo en la cabina
+  show(camera, r) {
+    this.draw(r);
+    camera.updateMatrixWorld();
+    camera.getWorldPosition(this.eye);
+    camera.getWorldDirection(this.dir);
+    this.dir.y = 0;
+    if (this.dir.lengthSq() < 1e-6) this.dir.set(0, 0, -1);
+    this.dir.normalize();
+    this.mesh.position.copy(this.eye).addScaledVector(this.dir, 1.1);
+    this.mesh.lookAt(this.eye.x, this.mesh.position.y, this.eye.z);
+    this.mesh.visible = true;
+  }
+  hide() {
+    this.mesh.visible = false;
+  }
+  draw(r) {
+    const { ctx, c, t } = this.tex;
+    const W = c.width, H = c.height, x0 = 52;
+    const tone = { ok: "#3ad07f", warn: "#f5b301", danger: "#ff5a5d" }[r.tone] || "#f5b301";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.font = `700 50px ${FONT}`;
+    const title = wrap2(ctx, r.title, W - 2 * x0).slice(0, 2);
+    const yScore = 96 + title.length * 58 + 14;
+    const yMetrics = yScore + (r.score != null ? 62 : 0);
+    const yFoot = yMetrics + (r.metrics.length ? 136 : 0);
+    const bottom = Math.min(H - 8, yFoot + 28 + 44);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(8,12,16,0.92)";
+    roundRect(ctx, 8, 8, W - 16, bottom - 8, 30);
+    ctx.fill();
+    ctx.strokeStyle = tone;
+    ctx.lineWidth = 6;
+    ctx.stroke();
+    ctx.fillStyle = tone;
+    ctx.font = `700 34px ${FONT}`;
+    ctx.fillText(r.upper.toUpperCase(), x0, 44);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `700 50px ${FONT}`;
+    title.forEach((ln, i) => ctx.fillText(ln, x0, 96 + i * 58));
+    if (r.score != null) {
+      ctx.fillStyle = "#c9d4de";
+      ctx.font = `600 38px ${FONT}`;
+      ctx.fillText(`Puntaje: ${r.score} / 100`, x0, yScore);
+    }
+    const n = r.metrics.length, gap = 18, bw = (W - 2 * x0 - gap * (n - 1)) / Math.max(1, n);
+    r.metrics.forEach((m, i) => {
+      const x = x0 + i * (bw + gap);
+      ctx.fillStyle = "rgba(255,255,255,0.07)";
+      roundRect(ctx, x, yMetrics, bw, 112, 16);
+      ctx.fill();
+      ctx.fillStyle = "#9fb0bf";
+      ctx.font = `600 24px ${FONT}`;
+      ctx.fillText(m.label, x + 20, yMetrics + 16);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `700 40px ${FONT}`;
+      ctx.fillText(m.value === "—" ? "—" : `${m.value} ${m.unit}`.trim(), x + 20, yMetrics + 54);
+    });
+    ctx.fillStyle = "#ffd04a";
+    ctx.font = `600 28px ${FONT}`;
+    ctx.fillText("Pulsa A para salir del visor y ver el informe completo.", x0, yFoot);
     t.needsUpdate = true;
   }
 };
@@ -13741,6 +13833,7 @@ var Simulator = class {
     this.truck.body.add(this.rig);
     this.rig.add(this.camera);
     this.displays = new CabDisplays(this.truck.interior, this.world.course);
+    this.xrResult = new XRResultPanel(scene);
     this.dyn = new TruckDynamics(this.world, "caex-300", { bermHeight: profile.bermHeight ?? 2.8 });
     this.traffic = new Traffic(scene, this.world, profile);
     this.dust = new DustSystem(scene);
@@ -13944,6 +14037,9 @@ var Simulator = class {
     this.paused = false;
     this.finished = false;
     this.record = null;
+    this.lastSummary = null;
+    clearTimeout(this.xrResultTimer);
+    this.xrResult?.hide();
     this.startedAt = /* @__PURE__ */ new Date();
     const procedure = eventMode ? def.procedure : this.settings.procedure;
     const sessionOpts = {
@@ -13994,6 +14090,7 @@ var Simulator = class {
   }
   begin() {
     if (!this.scenario || this.scenario.phase !== "listo") return;
+    if (this.displays.tutorMsg?.sticky) this.displays.setTutorMessage(null);
     this.audio.init();
     this.scenario.start();
     this.tutor.briefing(this.cfg.mode, {
@@ -14096,8 +14193,23 @@ var Simulator = class {
     this.visual?.setXR(true);
     this.needRecenter = 2;
     this.hud.vrChanged(true);
+    // Sin PC a mano (Meta Quest), el operador comienza con A; el instructor también puede pulsar Comenzar
+    if (this.scenario?.phase === "listo") this.displays.setTutorMessage({ text: "Listo para comenzar: aprieta el gatillo derecho para avanzar (o pulsa A). El gatillo izquierdo frena y el agarre derecho aplica el retardador.", sticky: true });
+    if (this.finished && this.lastSummary) this.showXRResult(500);
+  }
+  // Muestra el resultado dentro del visor, después de que la cabeza tenga posición
+  showXRResult(delay) {
+    clearTimeout(this.xrResultTimer);
+    this.xrResultTimer = setTimeout(() => {
+      if (!this.xr.presenting || !this.lastSummary) return;
+      this.displays.setTutorMessage(null);
+      this.xrResult.show(this.camera, this.lastSummary);
+    }, delay);
   }
   onXREnd() {
+    clearTimeout(this.xrResultTimer);
+    this.xrResult.hide();
+    if (this.displays.tutorMsg?.sticky) this.displays.setTutorMessage(null);
     this.haptics.xrSession = null;
     this.displays.setVRMode(false);
     this.visual?.setXR(false);
@@ -14186,7 +14298,8 @@ var Simulator = class {
         const res = sc.result();
         this.tutor.onEvent(sc.mode, "finish", data, { reaction: res.reaction });
         this.record = this.buildRecord();
-        this.hud.finished(data, res, this.record);
+        this.lastSummary = this.hud.finished(data, res, this.record);
+        if (this.xr.presenting) this.showXRResult(data.safe ? 1800 : 1200);
         break;
       }
       default:
@@ -14256,6 +14369,8 @@ var Simulator = class {
     let dt = Math.min(0.05, realDt);
     const xrSession = this.xr.session;
     this.input.speedKmh = Math.abs(this.dyn.v) * 3.6;
+    this.input.xrStartArmed = !!xrSession && this.scenario.phase === "listo";
+    this.input.xrExitArmed = !!xrSession && this.finished;
     const { ctl, ui } = this.input.poll(dt, xrSession);
     if (ui.camera) this.cycleCamera();
     if (ui.help) this.hud.toggleHelp();
@@ -14263,6 +14378,7 @@ var Simulator = class {
     if (ui.pause && this.scenario.phase !== "listo") this.setPaused(!this.paused);
     if (ui.trigger) this.triggerFailure();
     if (ui.recenter) this.recenter();
+    if (ui.exitVR && this.xr.presenting) this.xr.exit();
     if ((ui.start || ui.drive && !this.xr.presenting) && this.scenario.phase === "listo") this.begin();
     if (ui.parkingAuto && !this.finished) this.hud.toast("Freno de parqueo liberado al acelerar. La tecla P lo aplica o lo suelta.");
     if (this.paused) dt = 0;
@@ -14603,7 +14719,7 @@ var Hud = class {
         <div class="hud-chip" data-k="zonechip"><span data-k="zone">—</span></div>
         <div style="flex:1"></div>
         <button class="hud-btn" data-a="camera" title="Cambiar cámara (C)">${icon("camera")}<span data-k="cam">Cabina</span></button>
-        <button class="hud-btn vr" data-a="vr" hidden>${icon("vr")}<span data-k="vrlabel">Entrar en RV</span></button>
+        <button class="hud-btn vr" data-a="vr" title="Visor 3D (realidad virtual)">${icon("vr")}<span data-k="vrlabel">Conectar visor 3D</span></button>
         <button class="hud-btn" data-a="fullscreen" title="Pantalla completa">${icon("expand")}</button>
         <button class="hud-btn" data-a="help" title="Ayuda de teclas (F1)">${icon("keyboard")}</button>
         <button class="hud-btn" data-a="instructor" title="Panel del instructor (F2)">${icon("panel")}<span>Instructor</span></button>
@@ -14638,10 +14754,10 @@ var Hud = class {
       <div class="center-msg" data-k="ready">
         <h2>${esc2(info.modeLabel)} · ${esc2(info.scenarioTitle || "Falla de frenos en rampa")}</h2>
         <p>${esc2(info.truckName || "")}<br>${esc2(info.conditions)} · ${esc2(info.profile.rampName || "Rampa 2")} (${n12(info.profile.rampGrade ?? 9.5)}%)</p>
-        <p class="small mt12">${info.readyHelp || "Con visor: el operador se coloca el visor y el instructor pulsa <b>Comenzar</b>. Con teclado: pulse <b>Comenzar</b> o acelere con <kbd>W</kbd>; <kbd>A</kbd> <kbd>D</kbd> giran y <kbd>F1</kbd> muestra todas las teclas."}</p>
+        <p class="small mt12">${info.readyHelp || "Con visor 3D: pulse el botón del visor, póngaselo y apriete el gatillo derecho para comenzar (o el instructor pulsa <b>Comenzar</b>). Con teclado: pulse <b>Comenzar</b> o acelere con <kbd>W</kbd>; <kbd>A</kbd> <kbd>D</kbd> giran y <kbd>F1</kbd> muestra todas las teclas."}</p>
         <div class="row">
           <button class="btn primary lg" data-a="begin">${icon("play")}Comenzar <kbd>Enter</kbd></button>
-          <button class="btn lg" data-a="vr2" hidden>${icon("vr")}Entrar en RV</button>
+          <button class="btn lg" data-a="vr2">${icon("vr")}<span data-k="vrlabel2">Conectar visor 3D</span></button>
         </div>
       </div>
       <div class="center-msg" data-k="pause" hidden>
@@ -14667,8 +14783,17 @@ var Hud = class {
   setVRSupported(ok) {
     this.vrSupported = ok;
     if (!this.k) return;
-    this.root.querySelector('[data-a="vr"]').hidden = !ok;
-    this.root.querySelector('[data-a="vr2"]').hidden = !ok;
+    this.updateVRLabels();
+  }
+  // El botón del visor siempre está: entra al visor si se detecta o explica cómo conectarlo
+  updateVRLabels() {
+    const txt = this.inVR ? "Salir del visor 3D" : this.vrSupported ? "Entrar al visor 3D" : "Conectar visor 3D";
+    this.k.vrlabel.textContent = txt;
+    if (this.k.vrlabel2) this.k.vrlabel2.textContent = txt;
+    // Con el visor detectado, entrar al visor es el paso siguiente: pasa a ser el botón principal
+    const vrFirst = this.vrSupported && !this.inVR;
+    this.root.querySelector('[data-a="vr2"]')?.classList.toggle("primary", vrFirst);
+    this.root.querySelector('[data-a="begin"]')?.classList.toggle("primary", !vrFirst);
   }
   buildInstructor() {
     const info = this.info;
@@ -14919,6 +15044,19 @@ var Hud = class {
     }, outcome.safe ? 1800 : 1200);
     this.k.alarm.hidden = true;
     this.root.classList.remove("alarm-on");
+    // Mismo resumen para el panel que aparece dentro del visor
+    const kp = fam ? null : this.info.finishKpi?.(rec);
+    return {
+      tone: fam ? ok ? "ok" : "warn" : res.passed ? "ok" : ok ? "warn" : "danger",
+      upper: fam ? "Familiarización" : res.passed ? "Escenario aprobado" : "Escenario no aprobado",
+      title: outcome.label,
+      score: fam ? null : res.score,
+      metrics: fam ? [] : [
+        { label: "Primera acción", value: res.reaction != null ? n12(res.reaction) : "—", unit: "s" },
+        { label: "Pasos en orden", value: `${res.stepsInOrder}`, unit: `/ ${rec.procedure.length}` },
+        kp ? { label: kp.label, value: `${kp.value}`, unit: kp.unit || "" } : { label: "Vel. máxima", value: `${Math.round(rec.obs.vMaxAfter || 0)}`, unit: "km/h" }
+      ]
+    };
   }
   toggleHelp() {
     this.setHelp(!this.helpVisible);
@@ -14935,8 +15073,9 @@ var Hud = class {
     this.k2.cams.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.cam === mode));
   }
   vrChanged(on) {
+    this.inVR = on;
     if (!this.k) return;
-    this.k.vrlabel.textContent = on ? "Salir de RV" : "Entrar en RV";
+    this.updateVRLabels();
     this.k2.specwrap.hidden = !on;
     if (on) {
       this.ins.classList.add("open");
@@ -15412,6 +15551,7 @@ async function renderStation(root, app2) {
         <div class="hero-actions">
           <a class="btn primary lg" href="#/sesion">${icon("play")}Nueva sesión</a>
           <button class="btn lg" data-quick>${icon("keyboard")}Demostración rápida con teclado</button>
+          <button class="btn lg" data-visor>${icon("vr")}Falla de frenos con visor 3D</button>
         </div>
       </div>
       <div class="hero-art">${HERO_ART}</div>
@@ -15420,7 +15560,8 @@ async function renderStation(root, app2) {
     <div class="callout info mt16 web-note">
       <div><b>Demo web para teclado.</b> Pulsa <b>Demostración rápida con teclado</b> o <b>Probar con teclado</b> en cualquier simulación: <kbd>W</kbd> acelera, <kbd>S</kbd> frena, <kbd>A</kbd> <kbd>D</kbd> giran, <kbd>Espacio</kbd> aplica el retardador, <kbd>B</kbd> el freno de emergencia, <kbd>X</kbd> las luces de emergencia, <kbd>P</kbd> el freno de parqueo y <kbd>R</kbd> (mantener) la radio. <kbd>F1</kbd> muestra todas las teclas.</div>
       <div class="small muted mt8">En la mina, esta misma plataforma conecta el visor de RV, el volante con pedales y el traje háptico. Los registros y reportes de esta demo son simulados (operadores ficticios) y se guardan solo en tu navegador.</div>
-      <div class="small mt8 touch-note">${icon("alert")} El simulador necesita un teclado: ábrelo en una computadora. Desde aquí puedes revisar los registros y los reportes SSO.</div>
+      <div class="small mt8">${icon("vr")} <b>Con visor 3D:</b> pulsa <b>Falla de frenos con visor 3D</b>, luego <b>Entrar al visor 3D</b>, ponte el visor y aprieta el gatillo derecho para comenzar.</div>
+      <div class="small mt8 touch-note">${icon("alert")} El simulador necesita un teclado o un visor 3D: ábrelo en una computadora o en el navegador del visor. Desde aquí puedes revisar los registros y los reportes SSO.</div>
     </div>` : ""}
 
     <div class="grid g4 mt24">
@@ -15459,6 +15600,7 @@ async function renderStation(root, app2) {
         </div>
     </div>`;
   root.querySelector("[data-quick]").addEventListener("click", () => app2.startSession(quickSessionConfig(app2)));
+  root.querySelector("[data-visor]")?.addEventListener("click", () => app2.go("visor"));
   root.querySelectorAll("[data-quick-sc]").forEach((b) => b.addEventListener("click", () => app2.startSession(quickSessionConfig(app2, b.dataset.quickSc))));
   root.querySelector("[data-refresh]").addEventListener("click", () => app2.refreshStatus());
   const onStatus = () => {
@@ -16820,8 +16962,8 @@ async function renderSettings(root, app2) {
         <div class="card"><div class="card-head"><h3>${icon("vr")}Visor de realidad virtual</h3><span class="badge ${xr.state === "listo" ? "ok" : "warn"}">${esc(xr.label)}</span></div>
           <ol class="small muted" style="padding-left:18px;line-height:1.7;margin:0">
             <li>Conecte el visor al PC (Quest Link / Air Link, SteamVR u OpenXR de Windows) y deje activo el runtime de OpenXR.</li>
-            <li>Abra la plataforma en Chrome o Edge desde <span class="mono">http://localhost:8080</span> (WebXR exige localhost o https).</li>
-            <li>Al iniciar la sesión, pulse <b>Entrar en RV</b>. El operador queda en el asiento del CAEX; con <kbd>O</kbd> o el stick izquierdo se recentra la vista.</li>
+            <li>Abra la plataforma en Chrome o Edge con https (la demo publicada) o desde <span class="mono">http://localhost:8080</span>. Con un Meta Quest sin PC, ábrala en el navegador del visor.</li>
+            <li>Al iniciar la sesión, pulse <b>Entrar al visor 3D</b> (si no lo detecta, <b>Conectar visor 3D</b> explica cómo). El operador queda en el asiento del CAEX y comienza con <b>A</b> del control derecho, o el instructor pulsa <b>Comenzar</b>; con <kbd>O</kbd> o el stick izquierdo se recentra la vista. Al terminar, el resultado aparece dentro del visor.</li>
             <li>Durante la sesión el instructor ve en el monitor el panel con la vista del operador, la telemetría y el mapa háptico.</li>
           </ol></div>
         <div class="card"><div class="card-head"><h3>${icon("wheel")}Volante y pedales</h3>${prof ? '<span class="badge ok">Calibrado</span>' : '<span class="badge warn">Sin calibrar</span>'}</div>
@@ -17365,6 +17507,13 @@ async function renderResult(root, app2, params) {
 
 // js/main.js
 var VERSION2 = "1.1";
+// Acceso directo para usar el visor (#/visor o #/visor/<simulación>): abre la simulación lista para entrar al visor 3D
+async function renderVisor(root, app2, params) {
+  const id = SCENARIO_CATALOG.some((s) => s.id === params[0]) ? params[0] : SCENARIO_ID;
+  const cleanup = await renderStation(root, app2);
+  app2.startSession(quickSessionConfig(app2, id));
+  return cleanup;
+}
 var ROUTES = [
   { path: "estacion", label: "Estación", icon: "home", render: renderStation },
   { path: "sesion", label: "Nueva sesión", icon: "play", render: renderNewSession },
@@ -17393,6 +17542,7 @@ var app = {
   async refreshStatus() {
     const [xr, health, pending] = await Promise.all([checkXR(), aiHealth(), store.pendingCount().catch(() => 0)]);
     this.status.xr = xr;
+    this.hud?.setVRSupported(xr.state === "listo");
     this.status.server = !!health.server;
     this.status.ai = health.ai || { available: false };
     this.status.pending = pending;
@@ -17454,6 +17604,34 @@ var app = {
       this.starting = false;
     }
   },
+  // Ayuda para conectar el visor 3D cuando el navegador todavía no lo detecta
+  async connectHeadset() {
+    const xr = this.status.xr;
+    const url = location.origin + location.pathname;
+    const why = {
+      inseguro: "La página tiene que abrirse con https o desde localhost.",
+      "sin-webxr": "Este navegador no tiene WebXR. En la PC use Chrome o Edge; en el visor, su propio navegador.",
+      "no-soportado": "El navegador no encuentra ningún visor conectado."
+    }[xr.state] || xr.label;
+    const ok = await modal({
+      title: "Conectar el visor 3D",
+      body: `<p class="muted">${esc(why)}</p>
+        <ol class="small" style="padding-left:18px;line-height:1.7;margin:10px 0 0">
+          <li><b>Visor conectado a la PC</b> (Meta Quest con Link o Air Link, o un visor de SteamVR): enciéndalo, deje abierta su aplicación en la PC y use esta página en Chrome o Edge.</li>
+          <li><b>Meta Quest sin PC</b>: en el navegador del visor abra <span class="mono">${esc(url)}</span> y entre a esta simulación.</li>
+          <li>Pulse <b>Buscar visor</b>: si lo encuentra, la simulación se abre en el visor.</li>
+        </ol>
+        <p class="small muted mt12">Dentro del visor: el gatillo derecho comienza la sesión y acelera (también comienza con <b>A</b>) · gatillo izquierdo frena · <b>A</b>, freno de emergencia · agarre derecho, retardador · <b>B</b> mantenido, radio · stick izquierdo, dirección · <b>X</b>, parqueo · <b>Y</b>, luces de emergencia. Al terminar, el resultado aparece frente al operador.</p>`,
+      actions: [{ label: "Cerrar", value: false }, { label: "Buscar visor", kind: "primary", value: true }]
+    });
+    if (!ok) return;
+    const now = await checkXR();
+    this.status.xr = now;
+    renderTopbar();
+    this.hud?.setVRSupported(now.state === "listo");
+    if (now.state === "listo") await this.sim?.enterVR();
+    else toast(`Todavía no se detecta el visor: ${now.label}.`, "danger");
+  },
   async onHudAction(a) {
     const sim = this.sim;
     if (!sim) return;
@@ -17471,7 +17649,8 @@ var app = {
       case "vr":
       case "vr2":
         if (sim.xr.presenting) sim.xr.exit();
-        else sim.enterVR();
+        else if (this.status.xr.state === "listo") sim.enterVR();
+        else this.connectHeadset();
         break;
       case "camera":
         sim.cycleCamera();
@@ -17580,7 +17759,7 @@ async function route() {
   renderChrome();
   const view = document.getElementById("view");
   view.scrollTop = 0;
-  const r = path === "resultado" ? { render: renderResult } : ROUTES.find((x) => x.path === path) || ROUTES[0];
+  const r = path === "resultado" ? { render: renderResult } : path === "visor" ? { render: renderVisor } : ROUTES.find((x) => x.path === path) || ROUTES[0];
   view.innerHTML = "";
   const inner = document.createElement("div");
   inner.className = "view-inner";
@@ -17601,6 +17780,7 @@ window.addEventListener("gamepadconnected", (e) => {
   app.refreshStatus();
 });
 window.addEventListener("gamepaddisconnected", () => app.refreshStatus());
+navigator.xr?.addEventListener?.("devicechange", () => app.refreshStatus());
 async function seedWebDemo() {
   document.body.classList.add("web-demo");
   if (IN_VIEWER) {

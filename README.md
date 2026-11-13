@@ -62,6 +62,18 @@ Demo del simulador SimuMina para operadores mineros: 27 simulaciones de emergenc
 - El tutor de IA en la nube (informe y chat con Claude) funciona cuando la página se abre dentro de Claude. En otras vistas trabaja el tutor local, sin conexión.
 - `C` recorre las cámaras: cabina, exterior, retroceso, cine (cortes automáticos entre planos), dron y planta. En la cabina, el ratón permite mirar los espejos retrovisores.
 
+## Visor 3D (realidad virtual)
+
+**Acceso directo:** https://jmhuamann-bit.github.io/simumina/#/visor abre la falla de frenos lista para el visor (también desde la portada, con **Falla de frenos con visor 3D**). Con `#/visor/<simulación>` se abre otra, por ejemplo `#/visor/cargador-frenos`.
+
+Cada simulación tiene el botón **Conectar visor 3D** en la barra superior y en la pantalla de inicio. Cuando el navegador detecta un visor, el botón pasa a **Entrar al visor 3D**, queda como botón principal y abre la simulación en el visor.
+
+- **Visor conectado a la PC** (Meta Quest con Link o Air Link, o un visor de SteamVR): encienda el visor, deje abierta su aplicación en la PC y abra la demo en Chrome o Edge.
+- **Meta Quest sin PC**: abra la demo en el navegador del visor.
+- Dentro del visor, el gatillo derecho comienza la sesión y suelta el freno de parqueo, como `W` en el teclado (también comienza con `A`; el instructor puede pulsar **Comenzar**). Durante la sesión: gatillo derecho acelera, gatillo izquierdo frena, agarre derecho aplica el retardador, `A` el freno de emergencia, `B` (mantener) la radio, el stick izquierdo gira (en controles HTC Vive, el panel táctil), `X` el freno de parqueo e `Y` las luces de emergencia.
+- Al terminar, el resultado (aprobado o no, puntaje, primera acción, pasos en orden) aparece frente al operador dentro del visor. Con `A` sale del visor y en la pantalla queda el informe del tutor.
+- Si el visor no aparece, el botón explica cómo conectarlo y vuelve a buscarlo.
+
 ## Gráficos
 
 Un motor visual común aplica a las 27 simulaciones: posproceso HDR con gradación de color por simulación, luz ambiente que rebota del suelo, luz dinámica del fuego y de los rayos, polvo y partículas en el aire, huellas de neumáticos y orugas, suspensión con resortes, frenos que se ponen al rojo y humean, espejos retrovisores funcionales y escenografía propia del cargador (frente de carguío) y de la perforadora (malla de perforación y cresta del banco). El terreno, la cordillera y las rocas se dibujan por sectores y los camiones lejanos usan una versión simplificada. La calidad (Baja, Media, Alta) se elige en la configuración; dentro del visor de RV el detalle se ajusta solo.
